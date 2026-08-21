@@ -1,0 +1,19 @@
+{
+  "name": "@sentinel/monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "check": "turbo run check",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "db:check": "turbo run db:check",
+    "db:push": "turbo run db:push"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.4",
+    "typescript": "^5.7.3"
+  },
+  "packageManager": "pnpm@11.11.0"
+}

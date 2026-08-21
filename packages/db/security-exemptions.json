@@ -1,0 +1,10 @@
+[
+  {
+    "file": "packages/db/src/schema/tenants.ts",
+    "queryIdentifier": "publicStoreDirectory",
+    "targetTable": "stores",
+    "reason": "Global store directory lookup for initial routing and public store locator",
+    "approvedBy": "Principal Architect",
+    "approvedDate": "2026-08-19"
+  }
+]

@@ -1,0 +1,2 @@
+# Sentinel's local infrastructure has been migrated to the shared araneta-dev stack.
+# Please run 'docker compose up -d' in the araneta-dev directory instead.

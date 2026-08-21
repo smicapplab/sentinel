@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Turborepo
+.turbo/
+
+# Build outputs
+dist/
+build/
+.output/
+
+# SvelteKit
+.svelte-kit/
+
+# Environment variables — never commit secrets
+.env
+.env.*
+!.env.sample
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+pm2.log
+pm2-error.log
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Worktrees
+.worktrees/
+worktrees/
+
+# Sync mapping files (should live in superpowers/ local root, not here)
+*.sync.json
+
+# Uploads / local file storage
+uploads/
