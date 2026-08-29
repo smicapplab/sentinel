@@ -1,13 +1,17 @@
 import { Hono } from 'hono';
-import { db, tlogrcp } from '@sentinel/db';
+import { db, tlogrcp, posDeadLetters } from '@sentinel/db';
 import crypto from 'node:crypto';
 
 export const ingestRouter = new Hono();
 
+if (!process.env.POS_API_KEY_PH) {
+  throw new Error('CRITICAL: POS_API_KEY_PH environment variable is missing.');
+}
+
 // Franchise API key mapping (In production, stored hashed in DB / AWS Secrets Manager)
 const POS_KEY_STORE: Record<string, string> = {
   // franchiseId -> expected key
-  '00000000-0000-0000-0000-000000000001': process.env.POS_API_KEY_PH || 'pos_sec_test_pizzahut_key_123',
+  '00000000-0000-0000-0000-000000000001': process.env.POS_API_KEY_PH,
 };
 
 function authenticatePosKey(apiKey: string): string | null {
@@ -64,12 +68,27 @@ ingestRouter.post('/transactions', async (c) => {
     apprvlCode: item.apprvlCode ? String(item.apprvlCode) : null,
   }));
 
-  // Batch insert into TLOGRCP stream
-  await db.insert(tlogrcp).values(sanitizedRows);
+  // Batch insert into TLOGRCP stream with chunking and partial success
+  const CHUNK_SIZE = 100;
+  let successCount = 0;
+
+  for (let i = 0; i < sanitizedRows.length; i += CHUNK_SIZE) {
+    const chunk = sanitizedRows.slice(i, i + CHUNK_SIZE);
+    try {
+      await db.insert(tlogrcp).values(chunk).onConflictDoNothing();
+      successCount += chunk.length;
+    } catch (err: any) {
+      await db.insert(posDeadLetters).values({
+        franchiseId: authenticatedFranchiseId,
+        payload: chunk,
+        errorReason: err.message || 'Unknown constraint violation',
+      });
+    }
+  }
 
   return c.json({
     status: 'accepted',
-    count: sanitizedRows.length,
+    count: successCount,
     franchiseId: authenticatedFranchiseId,
     timestamp: new Date().toISOString(),
   });

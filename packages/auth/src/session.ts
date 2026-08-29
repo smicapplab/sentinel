@@ -1,5 +1,5 @@
 import type { Context, Next } from 'hono';
-import { db, sessions, users } from '@sentinel/db';
+import { db, sessions, users, stores } from '@sentinel/db';
 import { eq, and, gt } from 'drizzle-orm';
 import crypto from 'node:crypto';
 
@@ -7,6 +7,8 @@ export interface UserSession {
   userId: string;
   email: string;
   franchiseId: string;
+  storeId?: string | null;
+  storeNumber?: string | null;
   role: 'super_admin' | 'franchise_admin' | 'store_manager' | 'auditor';
 }
 
@@ -51,10 +53,13 @@ export async function authMiddleware(c: Context, next: Next) {
         userId: users.id,
         email: users.email,
         franchiseId: users.franchiseId,
+        storeId: users.storeId,
+        storeNumber: stores.storeNumber,
         role: users.role,
       })
       .from(sessions)
       .innerJoin(users, eq(sessions.userId, users.id))
+      .leftJoin(stores, eq(users.storeId, stores.id))
       .where(
         and(
           eq(sessions.id, hashedToken),
@@ -72,6 +77,8 @@ export async function authMiddleware(c: Context, next: Next) {
       userId: payload.userId,
       email: payload.email,
       franchiseId: payload.franchiseId,
+      storeId: payload.storeId,
+      storeNumber: payload.storeNumber,
       role: payload.role as UserSession['role'],
     });
 

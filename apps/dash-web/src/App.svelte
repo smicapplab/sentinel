@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { TrendingUp, ShieldCheck, DollarSign } from 'lucide-svelte';
+  import FloodRiskMap from './components/FloodRiskMap.svelte';
 
   let healthStatus = $state('Checking...');
 
@@ -74,6 +75,12 @@
         <p>Sentinel core services and Drizzle database schemas are initialized.</p>
         <p>Data science worker located in <code class="text-emerald-400">workers/analytics-engine</code> runs Polars-based market basket association rules and Z-score outlier detection models.</p>
       </div>
+    </div>
+
+    <!-- Dynamic Flood Risk Map -->
+    <div class="p-6 rounded-lg border border-slate-800 bg-slate-900/20 space-y-4">
+      <h2 class="text-base font-semibold text-slate-200">Dynamic Flood & Event Mapping</h2>
+      <FloodRiskMap />
     </div>
   </main>
 </div>

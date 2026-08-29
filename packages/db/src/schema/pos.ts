@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uuid, date, numeric, integer, smallint, char, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, uuid, date, numeric, integer, smallint, char, index, jsonb, unique } from 'drizzle-orm/pg-core';
 import { stores, franchises } from './tenants.js';
 
 // Granular raw POS line items stream (TLOGRCP)
@@ -31,7 +31,17 @@ export const tlogrcp = pgTable('tlogrcp', {
   index('tlogrcp_branch_repdate_idx').on(table.branch, table.repdate),
   index('tlogrcp_franchise_repdate_idx').on(table.franchiseId, table.repdate),
   index('tlogrcp_transact_idx').on(table.transact),
+  unique('tlogrcp_idempotency_idx').on(table.franchiseId, table.branch, table.transact, table.lineid),
 ]);
+
+// Dead-letter queue for failed POS ingestions
+export const posDeadLetters = pgTable('pos_dead_letters', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  franchiseId: uuid('franchise_id').references(() => franchises.id).notNull(),
+  payload: jsonb('payload').notNull(),
+  errorReason: text('error_reason').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
 
 // Pre-aggregated Daily Store Sales Rollup
 export const posDailyStoreSales = pgTable('pos_daily_store_sales', {

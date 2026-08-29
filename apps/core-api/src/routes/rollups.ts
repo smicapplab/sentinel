@@ -8,7 +8,15 @@ export const rollupsRouter = new Hono();
 // Get daily store sales rollups scoped strictly by franchise
 rollupsRouter.get('/daily-sales', async (c) => {
   const franchiseId = requireFranchiseScope(c);
-  const branch = c.req.query('branch');
+  const session = c.get('session');
+  let branch = c.req.query('branch');
+
+  if (session.role === 'store_manager') {
+    if (!session.storeNumber) {
+      return c.json({ error: 'Forbidden: Store Manager lacks store assignment' }, 403);
+    }
+    branch = session.storeNumber;
+  }
 
   let whereClause = withFranchiseScope(posDailyStoreSales.franchiseId, franchiseId);
   if (branch) {
@@ -28,7 +36,15 @@ rollupsRouter.get('/daily-sales', async (c) => {
 // Get hourly daypart sales summaries
 rollupsRouter.get('/hourly-summary', async (c) => {
   const franchiseId = requireFranchiseScope(c);
-  const branch = c.req.query('branch');
+  const session = c.get('session');
+  let branch = c.req.query('branch');
+
+  if (session.role === 'store_manager') {
+    if (!session.storeNumber) {
+      return c.json({ error: 'Forbidden: Store Manager lacks store assignment' }, 403);
+    }
+    branch = session.storeNumber;
+  }
 
   let whereClause = withFranchiseScope(posHourlySalesSummary.franchiseId, franchiseId);
   if (branch) {

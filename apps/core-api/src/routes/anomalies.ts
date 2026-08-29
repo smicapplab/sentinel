@@ -8,7 +8,15 @@ export const anomaliesRouter = new Hono();
 // Project #7: Discount & Void Fraud Anomaly Radar Leaderboard
 anomaliesRouter.get('/fraud-radar', async (c) => {
   const franchiseId = requireFranchiseScope(c);
-  const branch = c.req.query('branch');
+  const session = c.get('session');
+  let branch = c.req.query('branch');
+
+  if (session.role === 'store_manager') {
+    if (!session.storeNumber) {
+      return c.json({ error: 'Forbidden: Store Manager lacks store assignment' }, 403);
+    }
+    branch = session.storeNumber;
+  }
 
   let whereClause = withFranchiseScope(discountVoidAnomalies.franchiseId, franchiseId);
   if (branch) {
@@ -22,7 +30,14 @@ anomaliesRouter.get('/fraud-radar', async (c) => {
     .orderBy(desc(discountVoidAnomalies.zScore))
     .limit(50);
 
-  return c.json({ data: results });
+  const isPrivileged = ['auditor', 'loss_prevention', 'admin', 'super_admin', 'franchise_admin'].includes(session.role);
+
+  const redactedResults = results.map(row => ({
+    ...row,
+    cashierName: isPrivileged ? row.cashierName : (row.cashierName ? 'Cashier ****' : null)
+  }));
+
+  return c.json({ data: redactedResults });
 });
 
 // Project #4: Next-Best-Item (NBI) Recommendation Pairings

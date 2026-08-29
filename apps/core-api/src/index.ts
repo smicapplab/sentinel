@@ -4,6 +4,7 @@ import { authMiddleware } from '@sentinel/auth';
 import { healthRouter } from './routes/health.js';
 import { rollupsRouter } from './routes/rollups.js';
 import { anomaliesRouter } from './routes/anomalies.js';
+import { hazardsRouter } from './routes/hazards.js';
 
 import { authRouter } from './routes/auth.js';
 
@@ -19,6 +20,7 @@ app.route('/api/v1/auth', authRouter);
 app.use('/api/v1/*', authMiddleware);
 app.route('/api/v1/rollups', rollupsRouter);
 app.route('/api/v1/anomalies', anomaliesRouter);
+app.route('/api/v1/hazards', hazardsRouter);
 
 const port = Number(process.env.CORE_API_PORT || 5175);
 console.log(`[sentinel-core-api] Starting on port ${port}...`);

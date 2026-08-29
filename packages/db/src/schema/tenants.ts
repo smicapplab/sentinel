@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uuid, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, uuid, boolean, jsonb } from 'drizzle-orm/pg-core';
 
 export const franchises = pgTable('franchises', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -17,6 +17,7 @@ export const stores = pgTable('stores', {
   cluster: text('cluster'),
   region: text('region'),
   isHospitalOrRetirementArea: boolean('is_hospital_or_retirement_area').default(false).notNull(),
+  hazardPolygons: jsonb('hazard_polygons'),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -27,6 +28,7 @@ export const users = pgTable('users', {
   franchiseId: uuid('franchise_id').references(() => franchises.id).notNull(),
   email: text('email').notNull().unique(),
   role: text('role').notNull(), // 'super_admin' | 'franchise_admin' | 'store_manager' | 'auditor'
+  storeId: uuid('store_id').references(() => stores.id),
   fullName: text('full_name').notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
