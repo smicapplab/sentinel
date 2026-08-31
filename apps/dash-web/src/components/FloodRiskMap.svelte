@@ -9,12 +9,19 @@
     hazardPolygons: [number, number][][]; // GeoJSON-like array of [lng, lat]
     isHeavyRainfall: boolean;
     isSuspension: boolean;
+    pagasaAlert?: {
+      maxSignalLevel: number;
+      cycloneNames: string[];
+      rainfallWarningLevels: string[];
+    };
   };
 
   let mapContainer = $state<HTMLElement>();
   let hazards = $state<HazardData[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+
+  const sanitize = (str: string) => str.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   $effect(() => {
     // We run the fetch once
@@ -54,10 +61,12 @@
       if (!h.hazardPolygons || h.hazardPolygons.length === 0) continue;
 
       let color = 'blue';
-      if (h.isHeavyRainfall && h.isSuspension) {
+      if ((h.pagasaAlert && h.pagasaAlert.maxSignalLevel >= 3) || (h.isHeavyRainfall && h.isSuspension)) {
         color = 'red';
-      } else if (h.isHeavyRainfall) {
-        color = 'orange'; // Amber
+      } else if ((h.pagasaAlert && h.pagasaAlert.maxSignalLevel >= 1) || h.isHeavyRainfall) {
+        color = 'orange';
+      } else if (h.isSuspension) {
+        color = 'yellow';
       }
 
       for (const polygon of h.hazardPolygons) {
@@ -65,12 +74,22 @@
         // We assume [lng, lat] based on standard GeoJSON, so we reverse it.
         const latLngs = polygon.map(coord => [coord[1], coord[0]] as [number, number]);
         
+        let popupText = `<b>${sanitize(h.name)} (${sanitize(h.storeNumber)})</b><br>Rainfall: ${h.isHeavyRainfall}<br>Suspension: ${h.isSuspension}`;
+        if (h.pagasaAlert) {
+          if (h.pagasaAlert.cycloneNames.length > 0) {
+            popupText += `<br><b>TCWS Signal ${h.pagasaAlert.maxSignalLevel}</b>: ${sanitize(h.pagasaAlert.cycloneNames.join(', '))}`;
+          }
+          if (h.pagasaAlert.rainfallWarningLevels.length > 0) {
+            popupText += `<br><b>Rainfall Warning</b>: ${sanitize(h.pagasaAlert.rainfallWarningLevels.join(', '))}`;
+          }
+        }
+
         L.polygon(latLngs, {
           color,
           fillColor: color,
           fillOpacity: 0.5
         })
-        .bindPopup(`<b>${h.name}</b><br>Rainfall: ${h.isHeavyRainfall}<br>Suspension: ${h.isSuspension}`)
+        .bindPopup(popupText)
         .addTo(map);
       }
     }

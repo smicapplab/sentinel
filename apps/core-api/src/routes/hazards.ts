@@ -36,8 +36,9 @@ hazardsRouter.get('/', async (c) => {
     }
 
     const birdseyeData = await response.json();
-    const weatherData = birdseyeData.data.weather || [];
-    const eventsData = birdseyeData.data.events || [];
+    const weatherData = birdseyeData.data?.weather || [];
+    const eventsData = birdseyeData.data?.events || [];
+    const pagasaAlertsData = birdseyeData.data?.pagasaAlerts || [];
 
     // 2. Fetch local stores with hazard polygons for this franchise
     const storeRecords = await db.select({
@@ -50,13 +51,19 @@ hazardsRouter.get('/', async (c) => {
 
     // 3. Join data
     const joinedData = storeRecords.map(store => {
-      const storeWeather = weatherData.find((w: any) => w.storeNo === store.storeNumber || w.storeNo === 'global');
-      const storeEvent = eventsData.find((e: any) => e.storeNo === store.storeNumber || e.storeNo === 'all');
+      const storeWeather = weatherData.find((w: any) => (w.storeNumber || w.storeNo) === store.storeNumber || (w.storeNumber || w.storeNo) === 'global');
+      const storeEvent = eventsData.find((e: any) => (e.storeNumber || e.storeNo) === store.storeNumber || (e.storeNumber || e.storeNo) === 'all');
+      const storePagasa = pagasaAlertsData.find((p: any) => (p.storeNumber || p.storeNo) === store.storeNumber);
 
       return {
         ...store,
         isHeavyRainfall: storeWeather?.isHeavyRainfall || false,
-        isSuspension: storeEvent?.isSuspension || false
+        isSuspension: storeEvent?.isSuspension || false,
+        pagasaAlert: storePagasa ? {
+          maxSignalLevel: storePagasa.maxSignalLevel || 0,
+          cycloneNames: storePagasa.cycloneNames || [],
+          rainfallWarningLevels: storePagasa.rainfallWarningLevels || []
+        } : undefined
       };
     });
 

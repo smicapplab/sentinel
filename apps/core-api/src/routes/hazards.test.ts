@@ -44,15 +44,16 @@ describe('GET /api/v1/hazards', () => {
         json: async () => ({
           success: true,
           data: {
-            weather: [{ storeNo: 'STORE_001', isHeavyRainfall: true }],
-            events: [{ storeNo: 'STORE_001', isSuspension: true }]
+            weather: [{ storeNumber: 'STORE_001', isHeavyRainfall: true }],
+            events: [{ storeNumber: 'STORE_001', isSuspension: true }],
+            pagasaAlerts: [{ storeNumber: 'STORE_001', maxSignalLevel: 3, cycloneNames: ['PILANDOK'], rainfallWarningLevels: ['RED'] }]
           }
         })
       };
     }));
   });
 
-  it('should fetch hazards from Birdseye and join with local DB', async () => {
+  it('should fetch hazards from Birdseye and join with local DB including PAGASA alerts', async () => {
     const res = await app.request('/api/v1/hazards');
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -62,5 +63,10 @@ describe('GET /api/v1/hazards', () => {
     expect(body.data[0].storeNumber).toBe('STORE_001');
     expect(body.data[0].hazardPolygons).toBeDefined();
     expect(body.data[0].isHeavyRainfall).toBe(true);
+    expect(body.data[0].pagasaAlert).toEqual({
+      maxSignalLevel: 3,
+      cycloneNames: ['PILANDOK'],
+      rainfallWarningLevels: ['RED']
+    });
   });
 });
