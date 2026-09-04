@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "pre-commit": "bash scripts/pre-commit-verify.sh",
     "dev": "turbo run dev --parallel",
     "build": "turbo run build",
     "check": "turbo run check",
     "lint": "turbo run lint",
-    "test": "turbo run test",
+    "test": "turbo run test && pnpm run test:python",
+    "test:python": "bash scripts/run-python-tests.sh",
     "db:check": "turbo run db:check",
     "db:push": "turbo run db:push"
   },

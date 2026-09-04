@@ -41,3 +41,9 @@ worktrees/
 
 # Uploads / local file storage
 uploads/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJ_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -f "$PROJ_ROOT/scripts/pre-commit-verify.sh" ]; then
+  exec bash "$PROJ_ROOT/scripts/pre-commit-verify.sh"
+fi

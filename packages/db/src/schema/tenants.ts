@@ -14,6 +14,8 @@ export const stores = pgTable('stores', {
   franchiseId: uuid('franchise_id').references(() => franchises.id).notNull(),
   storeNumber: text('store_number').notNull().unique(),
   name: text('name').notNull(),
+  city: text('city'),
+  lguCode: text('lgu_code'),
   cluster: text('cluster'),
   region: text('region'),
   isHospitalOrRetirementArea: boolean('is_hospital_or_retirement_area').default(false).notNull(),

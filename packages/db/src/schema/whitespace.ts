@@ -1,0 +1,32 @@
+import { pgTable, text, timestamp, uuid, numeric, integer, boolean, jsonb, unique, index } from 'drizzle-orm/pg-core';
+
+export const whitespaceOpportunities = pgTable('whitespace_opportunities', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  companyId: text('company_id').notNull(),
+  lguCode: text('lgu_code').notNull(),
+  lguName: text('lgu_name').notNull(),
+  province: text('province').notNull(),
+  region: text('region').notNull(),
+  incomeClassification: text('income_classification').notNull(),
+  socioEconomicTier: text('socio_economic_tier').notNull(),
+  population: integer('population').notNull(),
+  averageFamilyIncomeAnnual: integer('avg_family_income_annual').notNull().default(0),
+  medianFamilyIncomeAnnual: integer('median_family_income_annual').notNull(),
+  demandGapScore: numeric('demand_gap_score', { precision: 5, scale: 2 }).notNull(),
+  predictedCaptureScore: numeric('predicted_capture_score', { precision: 5, scale: 2 }).notNull(),
+  opportunityScore: integer('opportunity_score').notNull(),
+  brandFit: text('brand_fit').notNull().default('Pizza Hut'),
+  hasExistingStore: boolean('has_existing_store').notNull().default(false),
+  competitorCounts: jsonb('competitor_counts').$type<{ pizza: number; fastfood: number; anchors: number }>().notNull().default({ pizza: 0, fastfood: 0, anchors: 0 }),
+  floodRiskLevel: text('flood_risk_level').notNull().default('LOW'),
+  goldenPolygonGeojson: jsonb('golden_polygon_geojson'),
+  layersGeojson: jsonb('layers_geojson'),
+  summaryRationale: text('summary_rationale'),
+  dataSource: text('data_source').notNull().default('ESTIMATED_BASELINE'),
+  isCalibratedEstimate: boolean('is_calibrated_estimate').notNull().default(true),
+  computedAt: timestamp('computed_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  unique('uq_whitespace_opportunities_comp_lgu').on(table.companyId, table.lguCode),
+  index('idx_whitespace_opportunities_comp_score').on(table.companyId, table.opportunityScore),
+  index('idx_whitespace_opportunities_province').on(table.province),
+]);
