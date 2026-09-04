@@ -17,7 +17,7 @@ EARTH_RADIUS_KM = 6371.0
 # Initial candidate LGUs for Pizza Hut Whitespace Expansion
 CANDIDATE_LGUS = [
     {
-        "lgu_code": "PH-074600000",
+        "lgu_code": "PH-074610000",
         "lgu_name": "Dumaguete City",
         "province": "Negros Oriental",
         "region": "Central Visayas (Region VII)",
@@ -32,7 +32,7 @@ CANDIDATE_LGUS = [
         "rationale": "High student density (Silliman University) and fast-expanding BPO industry. Domino is completely absent; Shakey and Greenwich only at Robinsons Mall. Heavy delivery whitespace opportunity."
     },
     {
-        "lgu_code": "PH-050500000",
+        "lgu_code": "PH-050506000",
         "lgu_name": "Legazpi City",
         "province": "Albay",
         "region": "Bicol Region (Region V)",
@@ -47,7 +47,7 @@ CANDIDATE_LGUS = [
         "rationale": "Regional administrative center of Bicol and tourism hub. Former branch at Pacific Mall closed; market is strongly validated with Domino, Shakey, and Greenwich actively capturing all casual dining traffic."
     },
     {
-        "lgu_code": "PH-175300000",
+        "lgu_code": "PH-175316000",
         "lgu_name": "Puerto Princesa",
         "province": "Palawan",
         "region": "MIMAROPA (Region IV-B)",
@@ -62,7 +62,7 @@ CANDIDATE_LGUS = [
         "rationale": "Independent HUC with high tourism volume and strong commercial retail infrastructure (SM & Robinsons). No active Pizza Hut leaves prime market share to local and legacy competitors."
     },
     {
-        "lgu_code": "PH-112300000",
+        "lgu_code": "PH-112319000",
         "lgu_name": "Tagum City",
         "province": "Davao del Norte",
         "region": "Davao Region (Region XI)",
@@ -185,7 +185,7 @@ def check_has_existing_store(lgu_code: str, lgu_name: str, existing_stores: list
     """
     Step 0 check: evaluates whether an active operating store already exists in candidate LGU.
     Matches against actual store attributes:
-    1. Exact lguCode match (e.g. 'PH-074600000').
+    1. Exact lguCode match (e.g. 'PH-074610000').
     2. City match (e.g. store city 'Dumaguete' == lgu 'Dumaguete City').
     3. Store name semantic match (e.g. 'Pizza Hut Dumaguete Perdices').
     """
@@ -253,7 +253,7 @@ def generate_golden_polygon_geojson(
     }
 
 FLOOD_HAZARD_ZONES = {
-    "PH-074600000": {
+    "PH-074610000": {
         "name": "Banica River & Coastal Lowland Inundation Zone",
         "severity": "MEDIUM",
         "hazardType": "Riverine & Coastal Storm Surge",
@@ -266,7 +266,7 @@ FLOOD_HAZARD_ZONES = {
             [123.300, 9.294],
         ]
     },
-    "PH-050500000": {
+    "PH-050506000": {
         "name": "Yawa River & Port Lowland Basin",
         "severity": "HIGH",
         "hazardType": "Flash Flood & Volcanic Lahar Runoff",
@@ -280,7 +280,7 @@ FLOOD_HAZARD_ZONES = {
             [123.725, 13.138],
         ]
     },
-    "PH-175300000": {
+    "PH-175316000": {
         "name": "Puerto Princesa Bay Tidal Inundation Basin",
         "severity": "LOW",
         "hazardType": "Coastal Mangrove Margin",
@@ -292,7 +292,7 @@ FLOOD_HAZARD_ZONES = {
             [118.730, 9.735],
         ]
     },
-    "PH-112300000": {
+    "PH-112319000": {
         "name": "Libuganon Basin Alluvial Floodplain",
         "severity": "HIGH",
         "hazardType": "Monsoon River Overflow",
@@ -332,7 +332,7 @@ def get_flood_hazard_feature(lgu_code: str, center_lat: float, center_lon: float
     return None
 
 TERRESTRIAL_CORRIDORS = {
-    "PH-074600000": {
+    "PH-074610000": {
         "name": "Dumaguete Core Delivery Zone",
         "areaKm2": 4.8,
         "recommendation": "Prime Site (Drive-Thru/Delivery Hub)",
@@ -345,7 +345,7 @@ TERRESTRIAL_CORRIDORS = {
             [123.298, 9.302],
         ]
     },
-    "PH-050500000": {
+    "PH-050506000": {
         "name": "SM City / Landco Corridor",
         "areaKm2": 5.2,
         "recommendation": "Prime Site (SM Mall Ingress / High Visibility)",
@@ -358,7 +358,7 @@ TERRESTRIAL_CORRIDORS = {
             [123.738, 13.136],
         ]
     },
-    "PH-175300000": {
+    "PH-175316000": {
         "name": "North Road Commercial Strip",
         "areaKm2": 6.1,
         "recommendation": "Stand-alone Delivery & Dining Store",
@@ -371,7 +371,7 @@ TERRESTRIAL_CORRIDORS = {
             [118.735, 9.742],
         ]
     },
-    "PH-112300000": {
+    "PH-112319000": {
         "name": "Daang Maharlika Highway Corridor",
         "areaKm2": 5.5,
         "recommendation": "Highway Drive-Thru Location",
@@ -404,7 +404,12 @@ def get_golden_polygon(lgu_code: str, center_lat: float, center_lon: float, name
         }
     return generate_golden_polygon_geojson(center_lat, center_lon, radius_km=1.1, name=f"{name} Core Catchment")
 
-def compute_candidate_records(candidate_lgus: list[dict], cleaned_pois: list[dict], existing_stores: list[dict] = None) -> list[dict]:
+def compute_candidate_records(
+    candidate_lgus: list[dict],
+    cleaned_pois: list[dict],
+    existing_stores: list[dict] = None,
+    avg_store_sales_proxy: float = 18_000_000.0
+) -> list[dict]:
     """
     Computes candidate scores and records using retail gap and Huff gravity modeling.
     Modular and pure for deterministic unit testing.
@@ -413,7 +418,6 @@ def compute_candidate_records(candidate_lgus: list[dict], cleaned_pois: list[dic
         existing_stores = []
 
     computed_records: list[dict] = []
-    avg_store_sales_proxy = 18_000_000.0  # Standard PH component city QSR branch revenue benchmark
 
     for lgu in candidate_lgus:
         lgu_code = lgu["lgu_code"]
@@ -537,7 +541,7 @@ def compute_candidate_records(candidate_lgus: list[dict], cleaned_pois: list[dic
 
         existing_supply = pizza_count * avg_store_sales_proxy
         demand_gap = calculate_demand_gap(potential_demand, existing_supply)
-        demand_gap_score = normalize_demand_gap_score(demand_gap, max_abs_gap=600_000_000.0)
+        demand_gap_score = normalize_demand_gap_score(demand_gap, max_abs_gap=2_500_000_000.0)
 
         # Step 4: Huff Gravity Model (Site offset 100m in commercial core)
         candidate_site = (cluster_pt[0] + 0.001, cluster_pt[1] + 0.001)
@@ -587,6 +591,9 @@ def compute_candidate_records(candidate_lgus: list[dict], cleaned_pois: list[dic
             layers_geojson["floodZones"] = flood_feature
 
         rationale = lgu["rationale"]
+        if "HUC" not in lgu.get("income_classification", "") and "Highly Urbanized" not in lgu.get("income_classification", ""):
+            rationale = f"[DATA PROVENANCE: Median Income is a provincial proxy estimate; PSA does not publish FIES at the component city level.] {rationale}"
+
         if is_calibrated_estimate:
             rationale = f"[ESTIMATED BASELINE: Google Places crawl pending for this LGU] {rationale}"
 
@@ -644,6 +651,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
 
     # Step 0: Fetch existing stores with city and LGU metadata from Sentinel DB
     existing_stores: list[dict] = []
+    avg_store_sales_proxy = 18_000_000.0  # Fallback standard PH QSR revenue benchmark
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
@@ -654,9 +662,17 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
                     for r in rows
                 ]
                 print(f"[Whitespace Radar] Loaded {len(existing_stores)} active stores from Sentinel database.")
+
+                cur.execute("SELECT AVG(net_sales) FROM pos_daily_store_sales")
+                row = cur.fetchone()
+                if row and row[0]:
+                    avg_daily_sales = float(row[0])
+                    if avg_daily_sales > 1000:
+                        avg_store_sales_proxy = avg_daily_sales * 365.0
+                        print(f"[Whitespace Radar] Dynamically calibrated avg store sales to PHP {avg_store_sales_proxy:,.2f} based on POS data.")
     except Exception as e:
-        print(f"[Whitespace Radar] FATAL ERROR: Failed to query stores from Sentinel database: {e}")
-        raise RuntimeError(f"Database error querying stores table: {e}") from e
+        print(f"[Whitespace Radar] FATAL ERROR: Failed to query stores/POS from Sentinel database: {e}")
+        raise RuntimeError(f"Database error querying Sentinel warehouse: {e}") from e
 
     # Step 2: Fetch Base LGUs from Birdseye Internal HTTP API
     birdseye_url = os.getenv("BIRDSEYE_URL", "http://localhost:5190")
@@ -724,7 +740,12 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
     cleaned_pois = clean_and_deduplicate_pois(raw_pois)
 
     # Step 3 & 4: Compute candidate records using retail gap and Huff gravity models
-    computed_records = compute_candidate_records(candidate_lgus, cleaned_pois, existing_stores)
+    computed_records = compute_candidate_records(
+        candidate_lgus=candidate_lgus,
+        cleaned_pois=cleaned_pois,
+        existing_stores=existing_stores,
+        avg_store_sales_proxy=avg_store_sales_proxy
+    )
 
 
     # Step 6: Persist pre-computed records to Sentinel Postgres warehouse
