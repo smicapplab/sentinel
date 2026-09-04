@@ -103,3 +103,11 @@ Upon successful persistence, Sentinel dispatches:
   2. **Single Writer Invariant**: `mat_whitespace_radar` has exactly one writer: Sentinel's completion webhook. Birdseye's GET handler NEVER writes to `mat_whitespace_radar`.
   3. **Strictly Read-Only Cache Fallback**: If an un-synced row has empty `competitorPoints`, Birdseye enriches the in-memory response from `mat_google_places` (read-only, `business_status` filtered).
   4. **Zero Synchronous Outbound Calls**: Birdseye GET handler never calls Google Places or external APIs synchronously. If 0 cached places exist, it returns `syncPending: true` with an empty FeatureCollection, letting the offline batch worker handle future crawl cycles.
+
+### ADR-04: Multi-Category POI Taxonomy, UP-NOAH Flood Polygons & Live Traffic Flow
+- **Status:** APPROVED for v1 Production.
+- **Context:** Executive review required granular visibility into specific POI classes (separating direct pizza competitors from fast food, dining, retail anchors, and educational institutions), functional flood hazard risk zones, and live traffic congestion.
+- **Decision:**
+  1. **Taxonomy Separation**: Disaggregated POI taxonomy into `PIZZA`, `FAST_FOOD`, `RESTAURANT`, `ANCHOR`, `EDUCATION`, `HOSPITAL`, and `LANDMARK`. Huff Gravity competition scoring strictly isolates QSR/dining anchors without skewing pizza supply calculations.
+  2. **UP-NOAH Flood Zones**: Hydrological geohazard polygons (riverine inundation, coastal surge) are serialized under `layersGeojson["floodZones"]` for all candidate LGUs with explicit severity tiers (`LOW`, `MEDIUM`, `HIGH`).
+  3. **Mapbox Traffic & Sleek Pins**: The UI renders custom drop-shadowed SVG teardrop pins and overlays real-time Mapbox vector traffic flow (`mapbox/traffic-day-v2`), retiring the obstructive 3km delivery circles.
