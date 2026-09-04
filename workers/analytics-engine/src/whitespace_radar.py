@@ -181,16 +181,34 @@ def calculate_huff_capture_probability(
         return 0.0
     return min(1.0, max(0.0, num / denom))
 
+# MANUAL SNAPSHOT, not a live feed: transcribed from the public Pizza Hut PH store locator
+# (pizzahut.com.ph/store-list) on 2026-09-04, pending real POS/SAP store data. Used only to
+# supplement check_has_existing_store() until Sentinel's `stores` table is populated from an
+# authoritative operational source. Refresh manually or delete this block once that lands.
+KNOWN_BRANCH_LGU_CODES_2026_09_04 = {
+    "PH-021529000",  # Tuguegarao City -- Pizza Hut SM Tuguegarao
+    "PH-034905000",  # Cabanatuan City -- Pizza Hut SM Cabanatuan / Pizza Hut Cabanatuan
+    "PH-041005000",  # Batangas City -- Pizza Hut SM Batangas
+    "PH-045624000",  # Lucena City -- Pizza Hut SM Lucena
+    "PH-126303000",  # General Santos City -- Pizza Hut SM General Santos / KCC Gen San
+    "PH-126306000",  # Koronadal City -- Pizza Hut KCC Mall of Marbel (Koronadal's historical name is Marbel)
+    "PH-071242000",  # Tagbilaran City -- Pizza Hut Bohol, G/F BQ Mall, C.P. Garcia Ave., Tagbilaran City
+}
+
 def check_has_existing_store(lgu_code: str, lgu_name: str, existing_stores: list[dict]) -> bool:
     """
     Step 0 check: evaluates whether an active operating store already exists in candidate LGU.
     Matches against actual store attributes:
-    1. Exact lguCode match (e.g. 'PH-074610000').
-    2. City match (e.g. store city 'Dumaguete' == lgu 'Dumaguete City').
-    3. Store name semantic match (e.g. 'Pizza Hut Dumaguete Perdices').
+    1. Manual snapshot of known branch LGUs (see KNOWN_BRANCH_LGU_CODES_2026_09_04 above).
+    2. Exact lguCode match (e.g. 'PH-074610000') from Sentinel's `stores` table.
+    3. City match (e.g. store city 'Dumaguete' == lgu 'Dumaguete City').
+    4. Store name semantic match (e.g. 'Pizza Hut Dumaguete Perdices').
     """
     norm_code = lgu_code.strip().upper()
     norm_name = lgu_name.lower().replace("city", "").replace("municipality", "").strip()
+
+    if norm_code in KNOWN_BRANCH_LGU_CODES_2026_09_04:
+        return True
 
     for store in existing_stores:
         # 1. Exact LGU Code match
@@ -474,7 +492,7 @@ def compute_candidate_records(
                 lgu_businesses.append({
                     "name": p.get("name", "Business"),
                     "category": classified_cat,
-                    "brand": p.get("name", "Competitor"),
+                    "brand": p.get("brand"),
                     "lat": p["lat"],
                     "lon": p["lon"],
                     "address": p.get("address", "")
@@ -592,7 +610,7 @@ def compute_candidate_records(
 
         rationale = lgu["rationale"]
         if "HUC" not in lgu.get("income_classification", "") and "Highly Urbanized" not in lgu.get("income_classification", ""):
-            rationale = f"[DATA PROVENANCE: Median Income is a provincial proxy estimate; PSA does not publish FIES at the component city level.] {rationale}"
+            rationale = f"[DATA PROVENANCE: Median Income is a calibrated model estimate; PSA does not publish FIES at the component city level.] {rationale}"
 
         if is_calibrated_estimate:
             rationale = f"[ESTIMATED BASELINE: Google Places crawl pending for this LGU] {rationale}"
@@ -621,6 +639,7 @@ def compute_candidate_records(
             "summaryRationale": rationale,
             "dataSource": data_source,
             "isCalibratedEstimate": is_calibrated_estimate,
+            "incomeDataProvenance": lgu.get("income_data_provenance", "MODEL_ESTIMATE"),
             "goldenPolygonGeojson": golden_polygon,
             "layersGeojson": layers_geojson
         }
@@ -638,7 +657,7 @@ def build_sync_payload(company_id: str, records: list[dict]) -> dict:
         "records": records
     }
 
-def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = True) -> list[dict]:
+def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = True, lgu_code: str = None) -> list[dict]:
     """
     Main execution pipeline for Sentinel Whitespace Radar:
     1. Check existing stores from Sentinel database (Step 0).
@@ -647,7 +666,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
     4. Persist pre-computed records to Sentinel Postgres warehouse (Step 6).
     5. Dispatch completion webhook to Birdseye (Step 7).
     """
-    print(f"[Whitespace Radar] Starting execution pipeline for company: {company_id}")
+    print(f"[Whitespace Radar] Starting execution pipeline for company: {company_id}" + (f" (LGU: {lgu_code})" if lgu_code else ""))
 
     # Step 0: Fetch existing stores with city and LGU metadata from Sentinel DB
     existing_stores: list[dict] = []
@@ -689,6 +708,9 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
         if lgu_resp.status_code == 200:
             fetched_lgus = lgu_resp.json().get("data", [])
             print(f"[Whitespace Radar] Fetched {len(fetched_lgus)} LGUs from Birdseye API.")
+            if lgu_code:
+                fetched_lgus = [l for l in fetched_lgus if l.get("lguCode") == lgu_code]
+                print(f"[Whitespace Radar] Scoped to targeted LGU {lgu_code}: {len(fetched_lgus)} record(s) matching.")
         else:
             raise RuntimeError(f"Failed to fetch LGUs from Birdseye, status {lgu_resp.status_code}")
     except Exception as e:
@@ -701,10 +723,10 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
     legacy_lgu_map = {lgu["lgu_code"]: lgu for lgu in CANDIDATE_LGUS}
 
     for flgu in fetched_lgus:
-        lgu_code = flgu.get("lguCode")
-        legacy_lgu = legacy_lgu_map.get(lgu_code, {})
+        flgu_code = flgu.get("lguCode")
+        legacy_lgu = legacy_lgu_map.get(flgu_code, {})
         candidate_lgus.append({
-            "lgu_code": lgu_code,
+            "lgu_code": flgu_code,
             "lgu_name": flgu.get("lguName"),
             "province": flgu.get("province"),
             "region": flgu.get("region"),
@@ -716,7 +738,8 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
             "socio_economic_tier": legacy_lgu.get("socio_economic_tier", "Pending Validation"),
             "avg_family_income_annual": legacy_lgu.get("avg_family_income_annual", int(flgu.get("medianFamilyIncomeAnnual", 0) * 1.25)),
             "flood_risk_level": legacy_lgu.get("flood_risk_level", "UNASSESSED"),
-            "rationale": legacy_lgu.get("rationale", "Automated baseline generation pending localized strategic review.")
+            "rationale": legacy_lgu.get("rationale", "Automated baseline generation pending localized strategic review."),
+            "income_data_provenance": flgu.get("incomeDataProvenance", "MODEL_ESTIMATE")
         })
 
     # Step 2.5: Ingest competitor & anchor POIs from Birdseye Internal HTTP API
@@ -752,37 +775,6 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                # Ensure table exists
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS whitespace_opportunities (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        company_id TEXT NOT NULL,
-                        lgu_code TEXT NOT NULL,
-                        lgu_name TEXT NOT NULL,
-                        province TEXT NOT NULL,
-                        region TEXT NOT NULL,
-                        income_classification TEXT NOT NULL,
-                        socio_economic_tier TEXT NOT NULL,
-                        population INTEGER NOT NULL,
-                        avg_family_income_annual INTEGER NOT NULL DEFAULT 0,
-                        median_family_income_annual INTEGER NOT NULL,
-                        demand_gap_score NUMERIC(5,2) NOT NULL,
-                        predicted_capture_score NUMERIC(5,2) NOT NULL,
-                        opportunity_score INTEGER NOT NULL,
-                        brand_fit TEXT NOT NULL DEFAULT 'Pizza Hut',
-                        has_existing_store BOOLEAN NOT NULL DEFAULT FALSE,
-                        competitor_counts JSONB NOT NULL DEFAULT '{"pizza":0,"fastfood":0,"anchors":0}',
-                        flood_risk_level TEXT NOT NULL DEFAULT 'LOW',
-                        golden_polygon_geojson JSONB,
-                        layers_geojson JSONB,
-                        summary_rationale TEXT,
-                        data_source TEXT NOT NULL DEFAULT 'ESTIMATED_BASELINE',
-                        is_calibrated_estimate BOOLEAN NOT NULL DEFAULT TRUE,
-                        computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                        CONSTRAINT uq_whitespace_opportunities_comp_lgu UNIQUE (company_id, lgu_code)
-                    )
-                """)
-                
                 # Upsert records
                 for rec in computed_records:
                     cur.execute("""
@@ -793,7 +785,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
                             demand_gap_score, predicted_capture_score,
                             opportunity_score, brand_fit, has_existing_store,
                             competitor_counts, flood_risk_level, golden_polygon_geojson,
-                            layers_geojson, summary_rationale, data_source, is_calibrated_estimate, computed_at
+                            layers_geojson, summary_rationale, data_source, is_calibrated_estimate, income_data_provenance, computed_at
                         ) VALUES (
                             %s, %s, %s, %s, %s,
                             %s, %s, %s,
@@ -801,7 +793,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
                             %s, %s,
                             %s, %s, %s,
                             %s, %s, %s,
-                            %s, %s, %s, %s, NOW()
+                            %s, %s, %s, %s, %s, NOW()
                         )
                         ON CONFLICT (company_id, lgu_code) DO UPDATE SET
                             opportunity_score = EXCLUDED.opportunity_score,
@@ -813,6 +805,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
                             summary_rationale = EXCLUDED.summary_rationale,
                             data_source = EXCLUDED.data_source,
                             is_calibrated_estimate = EXCLUDED.is_calibrated_estimate,
+                            income_data_provenance = EXCLUDED.income_data_provenance,
                             computed_at = NOW()
                     """, (
                         company_id, rec["lguCode"], rec["lguName"], rec["province"], rec["region"],
@@ -822,7 +815,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
                         rec["opportunityScore"], rec["brandFit"], rec["hasExistingStore"],
                         json.dumps(rec["competitorCounts"]), rec["floodRiskLevel"],
                         json.dumps(rec["goldenPolygonGeojson"]), json.dumps(rec["layersGeojson"]),
-                        rec["summaryRationale"], rec["dataSource"], rec["isCalibratedEstimate"]
+                        rec["summaryRationale"], rec["dataSource"], rec["isCalibratedEstimate"], rec["incomeDataProvenance"]
                     ))
                 conn.commit()
                 print(f"[Whitespace Radar] Persisted {len(computed_records)} opportunities to Sentinel warehouse.")
@@ -832,26 +825,49 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
 
     # Step 7: Dispatch completion webhook to Birdseye
     if trigger_webhook:
-        payload = build_sync_payload(company_id, computed_records)
-        webhook_url = f"{birdseye_url}/api/internal/whitespace-radar/sync"
-        try:
-            print(f"[Whitespace Radar] Dispatching completion webhook to: {webhook_url}")
-            wh_resp = requests.post(
-                webhook_url,
-                json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "x-internal-secret": internal_secret
-                },
-                timeout=15.0
-            )
-            if wh_resp.status_code == 200:
-                print(f"[Whitespace Radar] Webhook successfully acknowledged by Birdseye: {wh_resp.json()}")
-            else:
-                raise RuntimeError(f"Birdseye webhook rejected payload with status {wh_resp.status_code}: {wh_resp.text}")
-        except Exception as err:
-            print(f"[Whitespace Radar] Webhook dispatch error: {err}")
-            raise err
+        if lgu_code:
+            if len(computed_records) == 0:
+                raise ValueError(f"No records computed for targeted LGU: {lgu_code}")
+            score_url = f"{birdseye_url}/api/internal/lgus/{lgu_code}/score"
+            try:
+                print(f"[Whitespace Radar] Dispatching targeted score callback to: {score_url}")
+                wh_resp = requests.post(
+                    score_url,
+                    json={"companyId": company_id, "record": computed_records[0]},
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-internal-secret": internal_secret
+                    },
+                    timeout=15.0
+                )
+                if wh_resp.status_code == 200:
+                    print(f"[Whitespace Radar] Single-row score successfully acknowledged by Birdseye: {wh_resp.json()}")
+                else:
+                    raise RuntimeError(f"Birdseye score endpoint rejected payload with status {wh_resp.status_code}: {wh_resp.text}")
+            except Exception as err:
+                print(f"[Whitespace Radar] Targeted score dispatch error: {err}")
+                raise err
+        else:
+            payload = build_sync_payload(company_id, computed_records)
+            webhook_url = f"{birdseye_url}/api/internal/whitespace-radar/sync"
+            try:
+                print(f"[Whitespace Radar] Dispatching completion webhook to: {webhook_url}")
+                wh_resp = requests.post(
+                    webhook_url,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-internal-secret": internal_secret
+                    },
+                    timeout=15.0
+                )
+                if wh_resp.status_code == 200:
+                    print(f"[Whitespace Radar] Webhook successfully acknowledged by Birdseye: {wh_resp.json()}")
+                else:
+                    raise RuntimeError(f"Birdseye webhook rejected payload with status {wh_resp.status_code}: {wh_resp.text}")
+            except Exception as err:
+                print(f"[Whitespace Radar] Webhook dispatch error: {err}")
+                raise err
     return computed_records
 
 if __name__ == "__main__":
