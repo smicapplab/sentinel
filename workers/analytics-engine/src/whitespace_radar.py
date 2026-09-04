@@ -419,7 +419,7 @@ def get_golden_polygon(lgu_code: str, center_lat: float, center_lon: float, name
         }
     return generate_golden_polygon_geojson(center_lat, center_lon, radius_km=1.1, name=f"{name} Core Catchment")
 
-def compute_candidate_records(cleaned_pois: list[dict], existing_stores: list[dict] = None) -> list[dict]:
+def compute_candidate_records(candidate_lgus: list[dict], cleaned_pois: list[dict], existing_stores: list[dict] = None) -> list[dict]:
     """
     Computes candidate scores and records using retail gap and Huff gravity modeling.
     Modular and pure for deterministic unit testing.
@@ -430,7 +430,7 @@ def compute_candidate_records(cleaned_pois: list[dict], existing_stores: list[di
     computed_records: list[dict] = []
     avg_store_sales_proxy = 18_000_000.0  # Standard PH component city QSR branch revenue benchmark
 
-    for lgu in CANDIDATE_LGUS:
+    for lgu in candidate_lgus:
         lgu_code = lgu["lgu_code"]
         pop = lgu["population"]
         med_income = lgu["median_family_income_annual"]
@@ -671,12 +671,52 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
         print(f"[Whitespace Radar] FATAL ERROR: Failed to query stores from Sentinel database: {e}")
         raise RuntimeError(f"Database error querying stores table: {e}") from e
 
-    # Step 2: Ingest competitor & anchor POIs from Birdseye Internal HTTP API
+    # Step 2: Fetch Base LGUs from Birdseye Internal HTTP API
     birdseye_url = os.getenv("BIRDSEYE_URL", "http://localhost:5190")
     internal_secret = os.getenv("INTERNAL_API_SECRET")
     if not internal_secret:
         raise RuntimeError("INTERNAL_API_SECRET environment variable is unset. Failing closed.")
 
+    try:
+        lgu_resp = requests.get(
+            f"{birdseye_url}/api/internal/lgus",
+            headers={"x-internal-secret": internal_secret},
+            timeout=10.0
+        )
+        if lgu_resp.status_code == 200:
+            fetched_lgus = lgu_resp.json().get("data", [])
+            print(f"[Whitespace Radar] Fetched {len(fetched_lgus)} LGUs from Birdseye API.")
+        else:
+            raise RuntimeError(f"Failed to fetch LGUs from Birdseye, status {lgu_resp.status_code}")
+    except Exception as e:
+        print(f"[Whitespace Radar] FATAL ERROR fetching LGUs: {e}")
+        raise RuntimeError(f"API error querying LGUs: {e}") from e
+
+    # Map fetched LGUs to expected format, supplementing missing fields
+    candidate_lgus = []
+    # Create lookup for the old hardcoded CANDIDATE_LGUS to preserve their specific rationales/metadata
+    legacy_lgu_map = {lgu["lgu_code"]: lgu for lgu in CANDIDATE_LGUS}
+
+    for flgu in fetched_lgus:
+        lgu_code = flgu.get("lguCode")
+        legacy_lgu = legacy_lgu_map.get(lgu_code, {})
+        candidate_lgus.append({
+            "lgu_code": lgu_code,
+            "lgu_name": flgu.get("lguName"),
+            "province": flgu.get("province"),
+            "region": flgu.get("region"),
+            "population": flgu.get("population"),
+            "median_family_income_annual": flgu.get("medianFamilyIncomeAnnual"),
+            "cluster_lat": flgu.get("clusterLat"),
+            "cluster_lon": flgu.get("clusterLon"),
+            "income_classification": legacy_lgu.get("income_classification", "1st Class / HUC"),
+            "socio_economic_tier": legacy_lgu.get("socio_economic_tier", "Mid-Market (Class C)"),
+            "avg_family_income_annual": legacy_lgu.get("avg_family_income_annual", int(flgu.get("medianFamilyIncomeAnnual", 0) * 1.25)),
+            "flood_risk_level": legacy_lgu.get("flood_risk_level", "LOW"),
+            "rationale": legacy_lgu.get("rationale", "Strategic expansion opportunity in a highly populated urbanizing market. Primary delivery whitespace targeted.")
+        })
+
+    # Step 2.5: Ingest competitor & anchor POIs from Birdseye Internal HTTP API
     raw_pois: list[dict] = []
     try:
         resp = requests.get(
@@ -697,7 +737,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
     cleaned_pois = clean_and_deduplicate_pois(raw_pois)
 
     # Step 3 & 4: Compute candidate records using retail gap and Huff gravity models
-    computed_records = compute_candidate_records(cleaned_pois, existing_stores)
+    computed_records = compute_candidate_records(candidate_lgus, cleaned_pois, existing_stores)
 
 
     # Step 6: Persist pre-computed records to Sentinel Postgres warehouse
