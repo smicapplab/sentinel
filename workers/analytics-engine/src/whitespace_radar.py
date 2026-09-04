@@ -307,44 +307,29 @@ FLOOD_HAZARD_ZONES = {
     }
 }
 
-def get_flood_hazard_feature(lgu_code: str, center_lat: float, center_lon: float, lgu_name: str) -> dict:
+def get_flood_hazard_feature(lgu_code: str, center_lat: float, center_lon: float, lgu_name: str) -> dict | None:
     """Generates UP-NOAH / MGB flood hazard corridor polygon for the LGU."""
     hazard = FLOOD_HAZARD_ZONES.get(lgu_code)
     if hazard:
-        coords = hazard["coordinates"]
-        name = hazard["name"]
-        severity = hazard["severity"]
-        hazard_type = hazard["hazardType"]
-    else:
-        coords = [
-            [center_lon - 0.005, center_lat - 0.005],
-            [center_lon + 0.003, center_lat - 0.006],
-            [center_lon + 0.006, center_lat + 0.002],
-            [center_lon + 0.001, center_lat + 0.006],
-            [center_lon - 0.005, center_lat - 0.005],
-        ]
-        name = f"{lgu_name} Lowland Flood Basin"
-        severity = "MEDIUM"
-        hazard_type = "Lowland Alluvial Drainage"
-
-    return {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {
-                    "name": name,
-                    "severity": severity,
-                    "hazardType": hazard_type,
-                    "dataSource": "MGB / UP-NOAH Geohazard Assessment"
-                },
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [coords]
+        return {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "name": hazard["name"],
+                        "severity": hazard["severity"],
+                        "hazardType": hazard["hazardType"],
+                        "dataSource": "MGB / UP-NOAH Geohazard Assessment"
+                    },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [hazard["coordinates"]]
+                    }
                 }
-            }
-        ]
-    }
+            ]
+        }
+    return None
 
 TERRESTRIAL_CORRIDORS = {
     "PH-074600000": {
@@ -591,13 +576,15 @@ def compute_candidate_records(candidate_lgus: list[dict], cleaned_pois: list[dic
             for b in lgu_businesses
         ]
 
+        flood_feature = get_flood_hazard_feature(lgu_code, cluster_pt[0], cluster_pt[1], lgu["lgu_name"])
         layers_geojson = {
             "competitorPoints": {
                 "type": "FeatureCollection",
                 "features": competitor_features
-            },
-            "floodZones": get_flood_hazard_feature(lgu_code, cluster_pt[0], cluster_pt[1], lgu["lgu_name"])
+            }
         }
+        if flood_feature:
+            layers_geojson["floodZones"] = flood_feature
 
         rationale = lgu["rationale"]
         if is_calibrated_estimate:
@@ -709,11 +696,11 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
             "median_family_income_annual": flgu.get("medianFamilyIncomeAnnual"),
             "cluster_lat": flgu.get("clusterLat"),
             "cluster_lon": flgu.get("clusterLon"),
-            "income_classification": legacy_lgu.get("income_classification", "1st Class / HUC"),
-            "socio_economic_tier": legacy_lgu.get("socio_economic_tier", "Mid-Market (Class C)"),
+            "income_classification": legacy_lgu.get("income_classification", "Pending Classification"),
+            "socio_economic_tier": legacy_lgu.get("socio_economic_tier", "Pending Validation"),
             "avg_family_income_annual": legacy_lgu.get("avg_family_income_annual", int(flgu.get("medianFamilyIncomeAnnual", 0) * 1.25)),
-            "flood_risk_level": legacy_lgu.get("flood_risk_level", "LOW"),
-            "rationale": legacy_lgu.get("rationale", "Strategic expansion opportunity in a highly populated urbanizing market. Primary delivery whitespace targeted.")
+            "flood_risk_level": legacy_lgu.get("flood_risk_level", "UNASSESSED"),
+            "rationale": legacy_lgu.get("rationale", "Automated baseline generation pending localized strategic review.")
         })
 
     # Step 2.5: Ingest competitor & anchor POIs from Birdseye Internal HTTP API
