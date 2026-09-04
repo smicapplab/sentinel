@@ -24,6 +24,7 @@ export const whitespaceOpportunities = pgTable('whitespace_opportunities', {
   summaryRationale: text('summary_rationale'),
   dataSource: text('data_source').notNull().default('ESTIMATED_BASELINE'),
   isCalibratedEstimate: boolean('is_calibrated_estimate').notNull().default(true),
+  incomeDataProvenance: text('income_data_provenance').notNull().default('MODEL_ESTIMATE'),
   computedAt: timestamp('computed_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   unique('uq_whitespace_opportunities_comp_lgu').on(table.companyId, table.lguCode),
