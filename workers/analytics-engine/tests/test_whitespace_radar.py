@@ -458,7 +458,11 @@ def test_run_whitespace_radar_e2e_orchestration():
         with patch("src.whitespace_radar.get_connection") as mock_get_conn, \
              patch("src.whitespace_radar.fetch_lgus_from_birdseye") as mock_fetch_lgus, \
                  patch("src.whitespace_radar.fetch_pois_from_birdseye") as mock_fetch_pois, \
+             patch("src.whitespace_radar.fetch_store_roster_from_birdseye") as mock_fetch_roster, \
              patch("requests.post") as mock_http_post:
+            # Roster coverage is asserted by the import, so the pipeline must ask
+            # Birdseye for it rather than inferring it from the store rows.
+            mock_fetch_roster.return_value = ("COMPLETE", {"PH-126303000"})
 
             mock_get_conn.return_value.__enter__.return_value = mock_conn
 

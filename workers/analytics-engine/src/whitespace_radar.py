@@ -415,7 +415,12 @@ def compute_candidate_records(
         # Presence partition and confidence band.
         presence = presence_state(lgu_code, roster_coverage, roster_lgu_codes)
         c_brand, c_geo = competitor_coverage_fractions(nearby_competitors, lgu_businesses)
-        c_inc = 1.0 if lgu.get("income_data_provenance") == "PSA_ACTUAL" else 0.4
+        # Income confidence by provenance tier. PSA_PROVINCIAL is government-
+        # sourced but is the province figure standing in for a city, and cities
+        # are richer than their provinces, so it earns partial credit rather than
+        # full. An uncited claim earns the same as a model estimate.
+        _prov = lgu.get("income_data_provenance")
+        c_inc = 1.0 if _prov == "PSA_ACTUAL" else 0.7 if _prov == "PSA_PROVINCIAL" else 0.4
         coverage_index = compute_coverage_index(c_brand, c_geo, c_inc, c_cal=0.3)
         band_halfwidth, band_method = compute_confidence_band(coverage_index)
 
@@ -536,6 +541,34 @@ def fetch_pois_from_birdseye(company_id: str, lgu_code: str) -> list[dict]:
             f"POI fetch failed for {lgu_code}: HTTP {resp.status_code} {resp.text[:200]}"
         )
     return resp.json().get("pois", [])
+
+
+def fetch_store_roster_from_birdseye(company_id: str) -> tuple[str, set[str]]:
+    """
+    Returns (coverage, lgu_codes) for the Pizza Hut store roster.
+
+    Sourced from Birdseye, which owns ingestion, rather than Sentinel's own stores
+    table: the two copies had diverged (9 attributed branches there against 2 rows
+    here), and presence must be computed from the authoritative side.
+
+    Coverage is asserted by the import, not inferred. A roster of 9 branches looks
+    identical whether it is the complete national list or an arbitrary subset, and
+    only the former licenses an ABSENT verdict.
+    """
+    birdseye_url = os.getenv("BIRDSEYE_URL", "http://localhost:5190")
+    internal_secret = os.getenv("INTERNAL_API_SECRET")
+    if not internal_secret:
+        raise RuntimeError("INTERNAL_API_SECRET environment variable is unset. Failing closed.")
+
+    resp = requests.get(
+        f"{birdseye_url}/api/internal/stores/roster",
+        params={"companyId": company_id},
+        headers={"x-internal-secret": internal_secret},
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("coverage", "PARTIAL"), {c for c in data.get("lguCodes", []) if c}
 
 
 def fetch_lgus_from_birdseye(company_id: str, lgu_code: str = None) -> list[dict]:
@@ -659,9 +692,10 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
     # currently holds a handful of NCR rows against a national estate of roughly
     # 250-300 branches, so we cannot yet assert absence anywhere. Every LGU will
     # therefore report presenceState UNKNOWN, which is the honest answer.
-    roster_coverage = os.getenv("PH_STORE_ROSTER_COVERAGE", "PARTIAL").strip().upper()
+    roster_coverage, roster_codes = fetch_store_roster_from_birdseye(company_id)
     if roster_coverage not in ("COMPLETE", "PARTIAL", "PRESENCE_ONLY", "NO_PUBLIC_DATA"):
-        raise ValueError(f"Invalid PH_STORE_ROSTER_COVERAGE: {roster_coverage}")
+        raise ValueError(f"Invalid roster coverage from Birdseye: {roster_coverage}")
+    print(f"[Whitespace Radar] Store roster: {len(roster_codes)} LGU(s), coverage={roster_coverage}.")
 
     computed_records = compute_candidate_records(
         candidate_lgus=candidate_lgus,
@@ -669,7 +703,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
         existing_stores=existing_stores,
         avg_store_sales_proxy=avg_store_sales_proxy,
         roster_coverage=roster_coverage,
-        roster_lgu_codes=roster_lgu_codes_from_stores(existing_stores),
+        roster_lgu_codes=roster_codes,
     )
     print(
         f"[Whitespace Radar] Store roster coverage={roster_coverage}; "
