@@ -201,6 +201,23 @@ def test_geo_coverage_never_exceeds_brand_coverage():
     assert c_geo <= c_brand
 
 
+def test_lgu_with_no_competitor_coverage_is_not_scored():
+    """
+    Regression: a failed crawl produced the top-ranked recommendation. Zero
+    competitors reads as zero supply, hence maximum unmet demand, hence the
+    highest score. Observed live when Ormoc returned 1 POI against 235-276 for
+    every other city and ranked first.
+    """
+    lgus = [{
+        "lgu_code": "PH-083738000", "lgu_name": "Ormoc City", "province": "Leyte", "region": "VIII",
+        "income_classification": "1st Class", "socio_economic_tier": "Mid",
+        "population": 238545, "median_family_income_annual": 192425,
+        "avg_family_income_annual": 240000, "cluster_lat": 11.0064, "cluster_lon": 124.6075,
+        "flood_risk_level": "LOW", "rationale": "test",
+    }]
+    assert compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[]) == []
+
+
 def test_no_synthetic_competitors_are_fabricated():
     """An LGU with no POI coverage must not receive invented competitors."""
     lgus = [{
@@ -210,11 +227,9 @@ def test_no_synthetic_competitors_are_fabricated():
         "avg_family_income_annual": 300000, "cluster_lat": 10.0, "cluster_lon": 120.0,
         "flood_risk_level": "LOW", "rationale": "test",
     }]
-    records = compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[])
-    assert len(records) == 1
-    features = records[0]["layersGeojson"]["competitorPoints"]["features"]
-    assert features == [], "no competitor may be fabricated when POI coverage is absent"
-    assert records[0]["dataSource"] == "NO_POI_COVERAGE"
+    # With no POI coverage the LGU is skipped entirely rather than scored, so
+    # there is no record in which a competitor could have been fabricated.
+    assert compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[]) == []
 
 
 def test_every_record_carries_its_confidence_band():
@@ -363,6 +378,17 @@ def test_real_database_stores_schema_query():
     except Exception as e:
         pytest.skip(f"Postgres database not reachable for schema integration test: {e}")
 
+
+def _coverage_pois(lgus):
+    """One competitor per LGU centroid, so LGUs are not skipped for lack of coverage."""
+    out = []
+    for i, l in enumerate(lgus):
+        out.append({"name": f"Rival Pizza {i}", "brand": "Shakey's", "category": "PIZZA",
+                    "lat": l["cluster_lat"] + 0.004, "lon": l["cluster_lon"] + 0.004})
+        out.append({"name": f"Rival QSR {i}", "brand": "Jollibee", "category": "ANCHOR",
+                    "lat": l["cluster_lat"] + 0.006, "lon": l["cluster_lon"] - 0.005})
+    return out
+
 def test_candidate_scoring_is_differentiated_and_never_saturates():
     """
     Scores must differ across markets and must not pile up at a ceiling. This is
@@ -371,12 +397,7 @@ def test_candidate_scoring_is_differentiated_and_never_saturates():
     """
     from src.whitespace_radar import compute_candidate_records
 
-    pois = [
-        {"name": "Shakey's Pizza", "brand": "Shakey's", "category": "PIZZA", "lat": 9.309, "lon": 123.309},
-        {"name": "Jollibee Perdices", "brand": "Jollibee", "category": "ANCHOR", "lat": 9.310, "lon": 123.310},
-        {"name": "SM City Legazpi", "brand": None, "category": "ANCHOR", "lat": 13.141, "lon": 123.744},
-    ]
-    records = compute_candidate_records(CANDIDATE_LGUS, pois)
+    records = compute_candidate_records(CANDIDATE_LGUS, _coverage_pois(CANDIDATE_LGUS))
     assert len(records) == 4
 
     scores = [r["opportunityScore"] for r in records]
@@ -397,7 +418,7 @@ def test_trade_area_geometry_is_not_synthesised():
     """
     from src.whitespace_radar import compute_candidate_records
 
-    for r in compute_candidate_records(CANDIDATE_LGUS, []):
+    for r in compute_candidate_records(CANDIDATE_LGUS, _coverage_pois(CANDIDATE_LGUS)):
         poly = r["goldenPolygonGeojson"]
         assert "tradeRadiusKm" in poly
         assert "geometry" not in poly, "no synthesised polygon may be emitted"
@@ -527,10 +548,7 @@ def test_no_competitor_points_without_poi_coverage():
     """The synthetic pin generator is gone: an empty crawl yields an empty map."""
     from src.whitespace_radar import compute_candidate_records
 
-    for r in compute_candidate_records(CANDIDATE_LGUS, []):
-        assert r["layersGeojson"]["competitorPoints"]["features"] == []
-        assert r["dataSource"] == "NO_POI_COVERAGE"
-        assert r["isCalibratedEstimate"] is True
+    assert compute_candidate_records(CANDIDATE_LGUS, []) == []
 
 
 def test_flood_zones_come_from_upstream_or_are_omitted():
@@ -541,7 +559,8 @@ def test_flood_zones_come_from_upstream_or_are_omitted():
     """
     from src.whitespace_radar import compute_candidate_records
 
-    without = compute_candidate_records([dict(CANDIDATE_LGUS[0])], [])
+    pois = _coverage_pois([CANDIDATE_LGUS[0]])
+    without = compute_candidate_records([dict(CANDIDATE_LGUS[0])], pois)
     assert "floodZones" not in without[0]["layersGeojson"]
 
     upstream = dict(CANDIDATE_LGUS[0])
@@ -553,5 +572,5 @@ def test_flood_zones_come_from_upstream_or_are_omitted():
             "geometry": {"type": "Polygon", "coordinates": [[[123.3, 9.3], [123.31, 9.3], [123.31, 9.31], [123.3, 9.3]]]},
         }],
     }
-    with_zones = compute_candidate_records([upstream], [])
+    with_zones = compute_candidate_records([upstream], pois)
     assert "floodZones" in with_zones[0]["layersGeojson"]

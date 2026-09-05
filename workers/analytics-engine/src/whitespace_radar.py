@@ -332,6 +332,7 @@ def compute_candidate_records(
         roster_lgu_codes = roster_lgu_codes_from_stores(existing_stores)
 
     computed_records: list[dict] = []
+    skipped_no_coverage: list[str] = []
 
     for lgu in candidate_lgus:
         lgu_code = lgu["lgu_code"]
@@ -397,6 +398,20 @@ def compute_candidate_records(
         # empty map, and 17 of 20 cities fell through to a generic 2/8/4 default.
         data_source = "LIVE_POI_INGESTION" if nearby_competitors else "NO_POI_COVERAGE"
         is_calibrated_estimate = not bool(nearby_competitors)
+
+        # An LGU with no competitor coverage must NOT be scored.
+        #
+        # The saturation model reads zero competitors as zero supply, which is
+        # maximum unmet demand and therefore the highest possible score. A crawl
+        # that silently returned nothing then surfaces as the single best
+        # expansion recommendation. This was observed live: Ormoc returned 1 POI
+        # against 235-276 for every other city and ranked first at 49.
+        #
+        # Absence of evidence is not evidence of absence. Skip and report, so the
+        # LGU can be re-crawled rather than acted on.
+        if not nearby_competitors:
+            skipped_no_coverage.append(lgu_code)
+            continue
 
         existing_supply = pizza_count * avg_store_sales_proxy
         demand_gap = calculate_demand_gap(potential_demand, existing_supply)
@@ -503,6 +518,12 @@ def compute_candidate_records(
             "layersGeojson": layers_geojson
         }
         computed_records.append(record)
+
+    if skipped_no_coverage:
+        print(
+            f"[Whitespace Radar] Skipped {len(skipped_no_coverage)} LGU(s) with no competitor "
+            f"coverage (re-crawl required): {', '.join(skipped_no_coverage)}"
+        )
 
     computed_records.sort(key=lambda r: r["opportunityScore"], reverse=True)
     return computed_records
