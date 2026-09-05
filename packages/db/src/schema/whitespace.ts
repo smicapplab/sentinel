@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uuid, numeric, integer, boolean, jsonb, unique, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, uuid, numeric, integer, real, boolean, jsonb, unique, index } from 'drizzle-orm/pg-core';
 
 export const whitespaceOpportunities = pgTable('whitespace_opportunities', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -25,6 +25,15 @@ export const whitespaceOpportunities = pgTable('whitespace_opportunities', {
   dataSource: text('data_source').notNull().default('ESTIMATED_BASELINE'),
   isCalibratedEstimate: boolean('is_calibrated_estimate').notNull().default(true),
   incomeDataProvenance: text('income_data_provenance').notNull().default('MODEL_ESTIMATE'),
+  // Presence partitions the output rather than weighting it. UNKNOWN is the
+  // default because the Pizza Hut store roster is not yet complete enough to
+  // assert absence anywhere; see presence_state in whitespace_radar.py.
+  presenceState: text('presence_state').notNull().default('UNKNOWN'),
+  // A score is never persisted without its uncertainty. Defaults are maximum
+  // uncertainty, not zero.
+  coverageIndex: real('coverage_index').notNull().default(0),
+  confidenceBandHalfwidth: real('confidence_band_halfwidth').notNull().default(25),
+  bandMethod: text('band_method').notNull().default('COVERAGE_HEURISTIC'),
   computedAt: timestamp('computed_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   unique('uq_whitespace_opportunities_comp_lgu').on(table.companyId, table.lguCode),
