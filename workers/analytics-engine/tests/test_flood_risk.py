@@ -77,3 +77,18 @@ def test_scope_is_rainfall_only_and_says_so():
     doc = determine_flood_risk_level.__doc__ or ""
     assert "storm surge" in doc.lower()
     assert "rainfall" in doc.lower()
+
+
+def test_sentinel_never_materialises_flood_geometry():
+    """
+    Geometry belongs to Birdseye's per-LGU detail endpoint, not to the analytics engine.
+
+    Routing it through here put multi-megabyte polygons into mat_whitespace_radar:
+    20 rows reached 103 MB of JSON, loaded whole by a process with no memory ceiling.
+    Sentinel consumes flood PERCENTAGES; it has never needed the polygons.
+    """
+    import inspect
+    import src.whitespace_radar as wr
+    src = inspect.getsource(wr)
+    assert 'layers_geojson["floodZones"]' not in src
+    assert "layers_geojson['floodZones']" not in src

@@ -586,11 +586,16 @@ def test_no_competitor_points_without_poi_coverage():
     assert compute_candidate_records(CANDIDATE_LGUS, [], taxonomy=TEST_TAXONOMY) == []
 
 
-def test_flood_zones_come_from_upstream_or_are_omitted():
+def test_flood_geometry_is_never_materialised_by_sentinel():
     """
-    Flood geometry is sourced from Birdseye's PAGASA connector. The hardcoded
-    FLOOD_HAZARD_ZONES dict is deleted; absent data means no layer, not a
-    hand-drawn polygon.
+    Was: "flood geometry is sourced from Birdseye's PAGASA connector and carried through".
+    That is no longer true, deliberately.
+
+    The hand-drawn FLOOD_HAZARD_ZONES dict is still gone -- absent data means no layer, not
+    a fabricated polygon -- but Sentinel now carries NO flood geometry at all, even when
+    upstream supplies it. Routing it through here put multi-megabyte polygons into
+    mat_whitespace_radar.layers_geojson (20 rows, 103 MB of JSON) in a process with no
+    memory ceiling. Geometry is attached per-LGU by Birdseye's detail endpoint instead.
     """
     from src.whitespace_radar import compute_candidate_records
 
@@ -598,6 +603,7 @@ def test_flood_zones_come_from_upstream_or_are_omitted():
     without = compute_candidate_records([dict(CANDIDATE_LGUS[0])], pois, taxonomy=TEST_TAXONOMY)
     assert "floodZones" not in without[0]["layersGeojson"]
 
+    # Even when handed geometry, it must not be materialised.
     upstream = dict(CANDIDATE_LGUS[0])
     upstream["flood_zones"] = {
         "type": "FeatureCollection",
@@ -608,7 +614,37 @@ def test_flood_zones_come_from_upstream_or_are_omitted():
         }],
     }
     with_zones = compute_candidate_records([upstream], pois, taxonomy=TEST_TAXONOMY)
-    assert "floodZones" in with_zones[0]["layersGeojson"]
+    assert "floodZones" not in with_zones[0]["layersGeojson"]
+
+
+def test_fetch_upstream_lgus_maps_flood_zones_geojson(monkeypatch):
+    """
+    Birdseye provides floodZonesGeojson from master_ph_lgus.
+    fetch_lgus_from_birdseye must carry this as flood_zones.
+    """
+    import requests
+    from src.whitespace_radar import fetch_lgus_from_birdseye
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {
+                "success": True,
+                "data": [{
+                    "lguCode": "PH-074610000",
+                    "floodZonesGeojson": {"type": "FeatureCollection", "features": []}
+                }],
+                "transientArrivals": {},
+                "floodHazard": {}
+            }
+
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setenv("INTERNAL_API_SECRET", "test-secret")
+
+    lgus = fetch_lgus_from_birdseye("comp-1")
+    assert len(lgus) == 1
+    assert lgus[0]["flood_zones"] == {"type": "FeatureCollection", "features": []}
 
 
 # ---------------------------------------------------------------------------

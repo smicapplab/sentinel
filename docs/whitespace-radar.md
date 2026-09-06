@@ -119,6 +119,9 @@ $$\text{flood\_risk\_level} = \begin{cases}
 - Absence of NOAH coverage stays `UNASSESSED` (never defaulted to `LOW`).
 - Feeds `mat_whitespace_radar.flood_risk_level` as an executive risk indicator; does NOT
   enter `compute_composite_wos` and does not alter the opportunity ranking.
+- When Birdseye provides `floodZonesGeojson` on the upstream LGU payload, Sentinel maps it to
+  `flood_zones` and preserves it under `layers_geojson["floodZones"]` for client-side rendering.
+
 
 ### 3.5 Confidence Band
 

@@ -659,10 +659,16 @@ def compute_candidate_records(
                 "features": competitor_features
             }
         }
-        # Flood geometry comes from Birdseye's PAGASA connector, or not at all.
-        flood_feature = lgu.get("flood_zones")
-        if flood_feature:
-            layers_geojson["floodZones"] = flood_feature
+        # Flood geometry is DELIBERATELY not carried here.
+        #
+        # It lives in birdseye.master_ph_lgus and is attached per-LGU by Birdseye's detail
+        # endpoint. Routing it through Sentinel put it into mat_whitespace_radar.layers_geojson,
+        # where 20 rows reached 103 MB of JSON (12 MB for Tagum alone) -- loaded whole by
+        # this process, which ecosystem.config.cjs gives no max_memory_restart. That is
+        # precisely the unbounded-read failure remediation spec 4.4a exists to prevent.
+        #
+        # Sentinel needs the flood PERCENTAGES, which arrive as lgu_indicators. It has never
+        # needed the polygons.
 
         # Key the disclaimer off the provenance field itself. It previously keyed
         # off income_classification, which master_ph_lgus does not carry, so the
@@ -828,6 +834,7 @@ def fetch_lgus_from_birdseye(company_id: str, lgu_code: str = None) -> list[dict
     for l in lgus:
         code = l.get("lguCode")
         l["flood_hazard"] = flood_hazards.get(code)
+        l["flood_zones"] = l.get("floodZonesGeojson") or l.get("flood_zones_geojson") or l.get("flood_zones")
 
     if lgu_code:
         lgus = [l for l in lgus if l.get("lguCode") == lgu_code]
