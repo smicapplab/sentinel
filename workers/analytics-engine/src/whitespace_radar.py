@@ -409,6 +409,42 @@ def canonical_brand(name: str, taxonomy: dict):
     return taxonomy["aliases"].get(base)
 
 
+
+# Average nights a transient visitor stays in the LGU.
+#
+# THE SINGLE ASSERTED CONSTANT in the transient-demand path, and it is asserted: it cannot
+# be derived while pos_daily_store_sales holds 0 rows. Declared here beside W_MAX and
+# D_REF_PHP_PER_SUPPLY_UNIT rather than buried, and replaced under the same Phase C trigger.
+#
+# The alternative design -- passengers x per_visitor_spend x capture_rate -- would have
+# invented TWO constants. Converting arrivals into a resident-equivalent population instead
+# reuses the existing demand formula, so no new spend assumption enters the model.
+#
+# Section 5 of the spec requires the ranking to be published at 1/2/3/5/7 days before any
+# value is adopted. If the ranking reorders across that range, that IS the finding.
+AVG_STAY_DAYS = 2.0
+
+
+def compute_transient_population(air_arrivals: float, sea_arrivals: float,
+                                 avg_stay_days: float = AVG_STAY_DAYS) -> float:
+    """
+    Converts annual ARRIVALS into an equivalent resident population.
+
+    Arrivals, never passenger movements: a round trip is two movements. Sea arrivals are
+    PPA's published DISEMBARKED column; air arrivals are CAAP total/2, flagged upstream as
+    estimated because CAAP does not split them.
+
+    KNOWN UPWARD BIAS: a large share of provincial airport arrivals are residents coming
+    home, who are already counted in `population`. This inflates the result, worst at
+    airports serving high-outmigration provinces. Stated rather than corrected, because
+    correcting it needs survey data we do not have.
+    """
+    arrivals = max(0.0, float(air_arrivals or 0)) + max(0.0, float(sea_arrivals or 0))
+    if arrivals <= 0 or avg_stay_days <= 0:
+        return 0.0
+    return arrivals * avg_stay_days / 365.0
+
+
 def compute_candidate_records(
     candidate_lgus: list[dict],
     cleaned_pois: list[dict],
@@ -417,6 +453,7 @@ def compute_candidate_records(
     roster_coverage: str = "PARTIAL",
     roster_lgu_codes: set[str] = None,
     taxonomy: dict = None,
+    avg_stay_days: float = AVG_STAY_DAYS,
 ) -> list[dict]:
     """
     Computes candidate scores and records using retail gap and Huff gravity modeling.
@@ -445,9 +482,21 @@ def compute_candidate_records(
         cluster_pt = (lgu["cluster_lat"], lgu["cluster_lon"])
 
         # Step 3: Retail Gap Analysis (Urban Catchment Population)
+        #
+        # Transient visitors enter as an equivalent RESIDENT population and then flow
+        # through the existing formula unchanged. That is the point of the design: no
+        # per-visitor spend figure and no capture rate are introduced, so there is exactly
+        # one new asserted constant instead of two.
+        #
+        # An LGU with no facility contributes 0.0 here, which leaves its demand exactly as
+        # it was. That is not the same as asserting it has no transient demand -- it has no
+        # DATA, and Birdseye omits the key entirely rather than sending a zero.
+        transient_pop = compute_transient_population(
+            lgu.get("air_arrivals"), lgu.get("sea_arrivals"), avg_stay_days
+        )
         is_huc = "HUC" in lgu["income_classification"] or "Special" in lgu["income_classification"]
         urban_share = 0.55 if is_huc else 0.50
-        catchment_households = (pop * urban_share) / 4.2
+        catchment_households = ((pop + transient_pop) * urban_share) / 4.2
         spend_ratio = calculate_elastic_spend_ratio(med_income)
         potential_demand = catchment_households * med_income * spend_ratio
 
@@ -720,7 +769,19 @@ def fetch_lgus_from_birdseye(company_id: str, lgu_code: str = None) -> list[dict
         timeout=10.0,
     )
     resp.raise_for_status()
-    lgus = resp.json().get("data", [])
+    payload = resp.json()
+    lgus = payload.get("data", [])
+
+    # Transient arrivals, keyed by lgu_code. Birdseye OMITS an LGU with no facility rather
+    # than sending zero, so .get() below yields None and the demand term is left untouched.
+    # A zero would assert "no transient demand"; absent means "no data".
+    arrivals = payload.get("transientArrivals", {}) or {}
+    for l in lgus:
+        a = arrivals.get(l.get("lguCode")) or {}
+        if a.get("air") is not None:
+            l["air_arrivals"] = a["air"]
+        if a.get("sea") is not None:
+            l["sea_arrivals"] = a["sea"]
 
     if lgu_code:
         lgus = [l for l in lgus if l.get("lguCode") == lgu_code]
@@ -790,6 +851,11 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
             "income_data_provenance": flgu.get("incomeDataProvenance", "MODEL_ESTIMATE"),
             "cluster_lat": flgu.get("clusterLat", 0.0),
             "cluster_lon": flgu.get("clusterLon", 0.0),
+            # Absent when Birdseye has no facility for this LGU. Deliberately not
+            # defaulted to 0: compute_transient_population then contributes nothing and
+            # demand is unchanged, which is different from asserting zero transient demand.
+            "air_arrivals": flgu.get("air_arrivals"),
+            "sea_arrivals": flgu.get("sea_arrivals"),
             "socio_economic_tier": "Unknown",
             "avg_family_income_annual": int(flgu.get("medianFamilyIncomeAnnual", 0) * 1.25),
             "flood_risk_level": "UNASSESSED",

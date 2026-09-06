@@ -709,3 +709,61 @@ def test_taxonomy_fixture_matches_supply_contract():
     """Guards the fixture against drifting from the seeded weights it mirrors."""
     supply = {k: v["attractiveness"] for k, v in TEST_TAXONOMY["byCategory"].items() if v["countsAsSupply"]}
     assert supply == {"PIZZA": 1.0, "FAST_FOOD": 1.2, "RESTAURANT": 0.6, "ANCHOR": 1.5}
+
+
+# ---------------------------------------------------------------------------
+# Transient demand from transport arrivals (spec 2026-09-08)
+# ---------------------------------------------------------------------------
+
+def test_transient_population_converts_arrivals_to_resident_equivalent():
+    from src.whitespace_radar import compute_transient_population
+    # 365,000 arrivals staying 2 days = 2,000 resident-equivalents.
+    assert compute_transient_population(365_000, 0, 2.0) == 2000.0
+    assert compute_transient_population(0, 365_000, 1.0) == 1000.0
+
+
+def test_transient_population_is_zero_when_no_facility_data():
+    """
+    Absent arrivals must leave demand untouched. Birdseye omits the key rather than
+    sending zero; a zero would assert "no transient demand", which is a different claim.
+    """
+    from src.whitespace_radar import compute_transient_population
+    assert compute_transient_population(None, None) == 0.0
+    assert compute_transient_population(0, 0) == 0.0
+
+
+def test_transient_population_scales_linearly_with_stay_length():
+    from src.whitespace_radar import compute_transient_population
+    a = compute_transient_population(100_000, 50_000, 1.0)
+    b = compute_transient_population(100_000, 50_000, 4.0)
+    assert abs(b - 4 * a) < 1e-6
+
+
+def test_no_per_visitor_spend_or_capture_rate_constant_exists():
+    """
+    The design converts arrivals to resident-equivalents so the EXISTING demand formula
+    does the spend conversion. A per-visitor spend or capture rate would be a second
+    invented constant, which is what this design exists to avoid.
+    """
+    import inspect, re
+    import src.whitespace_radar as wr
+    src = inspect.getsource(wr)
+    for banned in (r'PER_VISITOR_SPEND', r'CAPTURE_RATE', r'VISITOR_SPEND', r'TOURIST_SPEND'):
+        assert not re.search(banned, src), f'{banned} must not exist'
+
+
+def test_arrivals_raise_demand_for_a_high_traffic_lgu():
+    from src.whitespace_radar import compute_candidate_records
+    base = {
+        "lgu_code": "PH-060408000", "lgu_name": "Kalibo", "province": "Aklan", "region": "VI",
+        "income_classification": "1st Class", "population": 80_000,
+        "median_family_income_annual": 250_000, "income_data_provenance": "PSA_PROVINCIAL",
+        "cluster_lat": 11.706, "cluster_lon": 122.366, "socio_economic_tier": "Unknown",
+        "avg_family_income_annual": 312_500, "flood_risk_level": "UNASSESSED", "rationale": "",
+    }
+    pois = [{"name": "Pizza Place", "category": "PIZZA", "rawTypes": ["pizza_restaurant"],
+             "lat": 11.708, "lon": 122.368, "brand": None, "businessStatus": "OPERATIONAL"}]
+    without = compute_candidate_records([dict(base)], pois, taxonomy=TEST_TAXONOMY)
+    withal = compute_candidate_records([dict(base, air_arrivals=397_812)], pois, taxonomy=TEST_TAXONOMY)
+    assert without and withal
+    assert withal[0]["demandGapScore"] > without[0]["demandGapScore"]
