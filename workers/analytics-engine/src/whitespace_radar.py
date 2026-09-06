@@ -211,9 +211,25 @@ def compute_confidence_band(coverage_index: float, method: str = "COVERAGE_HEURI
     return round(W_MAX * (1.0 - bounded), 2), method
 
 
-BRAND_ROSTER = (
-    "Jollibee", "McDonald's", "Shakey's", "KFC", "Chowking", "Mang Inasal",
-    "Greenwich", "Domino's", "Yellow Cab", "Pizza Hut", "Angel's Pizza",
+# Crawl-coverage probe. NOT a competitor list -- competitors are unbounded and live in
+# the taxonomy (counts_as_supply). This is an INSTRUMENT CHECK: these chains are present
+# in essentially every Philippine city of this size, so failing to observe them means the
+# crawl failed, not that the market is empty.
+#
+# Membership is deliberately narrow. Measured presence across the base 20 (2026-09-07):
+# Jollibee 19, McDonald's 19, Greenwich 19, Chowking 16, Mang Inasal 16 -- against
+# KFC 16, Yellow Cab 7, Domino's 5, Pizza Hut 4.
+#
+# Pizza Hut, Domino's and Yellow Cab were removed from the denominator. Their absence is
+# a FINDING about the market, not evidence the crawl misfired, and counting it as the
+# latter made the tool less confident precisely when it discovered a true absence. Pizza
+# Hut's own absence -- the exact condition this feature exists to detect -- was costing
+# an LGU 1/11 of its coverage and widening its confidence band.
+#
+# Shakey's is excluded until brand aliasing is applied end to end: it appears under three
+# distinct normalised spellings, and an unreliable probe is worse than a smaller one.
+CRAWL_PROBE_BRANDS = (
+    "Jollibee", "McDonald's", "Greenwich", "Chowking", "Mang Inasal",
 )
 
 
@@ -236,7 +252,7 @@ def competitor_coverage_fractions(
     businesses: list[dict],
 ) -> tuple[float, float]:
     """
-    Returns (c_brand, c_geo) against BRAND_ROSTER.
+    Returns (c_brand, c_geo) against CRAWL_PROBE_BRANDS.
 
     Competitor POIs currently originate from Google Places, which is unverified
     (PLACES_API), so these fractions measure observation, not verification. The
@@ -244,7 +260,7 @@ def competitor_coverage_fractions(
     exists. Every Places POI carries coordinates by construction, so c_geo tracks
     c_brand today; they diverge once unlocated verified rows can enter.
     """
-    if not BRAND_ROSTER:
+    if not CRAWL_PROBE_BRANDS:
         return 0.0, 0.0
     observed = {
         str(b.get("brand") or "").strip().lower()
@@ -256,7 +272,7 @@ def competitor_coverage_fractions(
         for b in businesses
         if b.get("brand") and b.get("lat") is not None and b.get("lon") is not None
     }
-    roster = {b.lower() for b in BRAND_ROSTER}
+    roster = {b.lower() for b in CRAWL_PROBE_BRANDS}
     c_brand = len(observed & roster) / len(roster)
     c_geo = len(located & roster) / len(roster)
     return round(c_brand, 4), round(c_geo, 4)
@@ -314,6 +330,85 @@ def build_trade_area_stub(trade_radius_km: float = 6.0) -> dict:
     return {"tradeRadiusKm": trade_radius_km}
 
 
+
+# ---------------------------------------------------------------------------
+# POI taxonomy: one source of truth, served by Birdseye.
+#
+# Three lists previously disagreed: birdseye.poi_taxonomy_map (read only by
+# materialize.ts), KNOWN_BRANDS plus a keyword chain in lguPoiProcessor.ts, and a second
+# keyword chain here. The disagreement is what left Angel's Pizza -- 16 branches across
+# 13 LGUs -- permanently unattributed: it was in the scoring roster but absent from the
+# ingest matcher, so nothing ever labelled it.
+# ---------------------------------------------------------------------------
+
+DEFAULT_TAXONOMY_CATEGORY = "RESTAURANT"
+
+
+def fetch_taxonomy_from_birdseye() -> dict:
+    """
+    Returns {"byType": {google_type: {...}}, "byCategory": {CATEGORY: {...}}, "aliases": {...}}.
+
+    Fails closed. A silent fallback to a local keyword chain would recreate the exact
+    divergence this replaces, and it would do so invisibly.
+    """
+    birdseye_url = os.getenv("BIRDSEYE_URL", "http://localhost:5190")
+    internal_secret = os.getenv("INTERNAL_API_SECRET")
+    if not internal_secret:
+        raise RuntimeError("INTERNAL_API_SECRET environment variable is unset. Failing closed.")
+
+    resp = requests.get(
+        f"{birdseye_url}/api/internal/poi/taxonomy",
+        headers={"x-internal-secret": internal_secret},
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    cats = data.get("categories", [])
+    if not cats:
+        raise RuntimeError("Birdseye returned an empty POI taxonomy; refusing to score without it.")
+
+    by_type, by_category = {}, {}
+    for c in cats:
+        by_type[str(c["googleType"]).lower()] = c
+        by_category.setdefault(str(c["category"]).upper(), c)
+    return {"byType": by_type, "byCategory": by_category, "aliases": data.get("brandAliases", {})}
+
+
+def classify_poi(poi: dict, taxonomy: dict) -> str:
+    """
+    Category for a POI: its ingest-assigned category if the taxonomy knows it, else the
+    first rawType the taxonomy recognises, else RESTAURANT.
+
+    Defaulting to RESTAURANT means an unrecognised dining POI COUNTS as supply at the
+    generic weight. That direction is deliberate: under-counting supply inflates the
+    demand gap and overstates opportunity, which is the expensive error here.
+    """
+    cat = str(poi.get("category", "")).upper()
+    if cat in taxonomy["byCategory"]:
+        return cat
+    for t in (poi.get("rawTypes") or []):
+        hit = taxonomy["byType"].get(str(t).lower())
+        if hit:
+            return str(hit["category"]).upper()
+    return DEFAULT_TAXONOMY_CATEGORY
+
+
+def supply_weight(category: str, taxonomy: dict):
+    """Attractiveness weight, or None when the category is not competing supply."""
+    entry = taxonomy["byCategory"].get(str(category).upper())
+    if not entry or not entry.get("countsAsSupply"):
+        return None
+    w = entry.get("attractiveness")
+    return None if w is None else float(w)
+
+
+def canonical_brand(name: str, taxonomy: dict):
+    """Resolves a POI name to a canonical brand via aliases, or None."""
+    import re as _re
+    base = _re.sub(r"[^a-z0-9 ]", "", str(name).split("-")[0].split("(")[0].lower()).strip()
+    return taxonomy["aliases"].get(base)
+
+
 def compute_candidate_records(
     candidate_lgus: list[dict],
     cleaned_pois: list[dict],
@@ -321,11 +416,20 @@ def compute_candidate_records(
     avg_store_sales_proxy: float = 18_000_000.0,
     roster_coverage: str = "PARTIAL",
     roster_lgu_codes: set[str] = None,
+    taxonomy: dict = None,
 ) -> list[dict]:
     """
     Computes candidate scores and records using retail gap and Huff gravity modeling.
     Modular and pure for deterministic unit testing.
     """
+    if taxonomy is None:
+        # No local fallback on purpose. A default keyword chain here would be exactly the
+        # divergence this replaced: it drifts from Birdseye's table silently, and nobody
+        # finds out until a brand has gone unattributed for weeks.
+        raise ValueError(
+            "compute_candidate_records requires a taxonomy. "
+            "Call fetch_taxonomy_from_birdseye(), or inject one in tests."
+        )
     if existing_stores is None:
         existing_stores = []
     if roster_lgu_codes is None:
@@ -362,26 +466,25 @@ def compute_candidate_records(
                 raw_types = [str(t).upper() for t in p.get("rawTypes", [])] if isinstance(p.get("rawTypes"), list) else []
                 types_str = " ".join(raw_types)
 
-                if "PIZZA" in cat or "PIZZA" in name:
-                    classified_cat = "PIZZA"
+                # Taxonomy-driven, not a keyword chain. The chain this replaces ended in
+                # a bare `else: RESTAURANT` with no append, so 2,057 POIs -- 52% of all
+                # dining and anchor POIs -- were drawn on the map as competitor pins and
+                # then silently dropped before the supply term. That exclusion was never
+                # a decision; it was the fall-through branch of an if/elif.
+                classified_cat = classify_poi(p, taxonomy)
+                weight = supply_weight(classified_cat, taxonomy)
+
+                if classified_cat == "PIZZA":
                     pizza_count += 1
-                    nearby_competitors.append({"lat": p["lat"], "lon": p["lon"], "attractiveness": 1.0})
-                elif "ANCHOR" in cat or any(kw in name for kw in ["MALL", "SM ", "SM CITY", "ROBINSONS", "GAISANO", "LEE SUPER PLAZA", "UNITOP", "CANG'S"]):
-                    classified_cat = "ANCHOR"
+                elif classified_cat == "ANCHOR":
                     anchor_count += 1
-                    nearby_competitors.append({"lat": p["lat"], "lon": p["lon"], "attractiveness": 1.5})
-                elif any(kw in name for kw in ["JOLLIBEE", "MCDONALD", "KFC", "MANG INASAL", "CHOWKING", "BURGER KING"]) or "FAST_FOOD" in cat:
-                    classified_cat = "FAST_FOOD"
+                elif classified_cat == "FAST_FOOD":
                     fastfood_count += 1
-                    nearby_competitors.append({"lat": p["lat"], "lon": p["lon"], "attractiveness": 1.2})
-                elif "UNIVERSITY" in name or "COLLEGE" in name or "SCHOOL" in name or "EDUCATION" in cat or "UNIVERSITY" in types_str:
-                    classified_cat = "EDUCATION"
-                elif "HOSPITAL" in name or "MEDICAL" in name or "CLINIC" in name:
-                    classified_cat = "HOSPITAL"
-                elif any(kw in name for kw in ["PLAZA", "PARK", "CATHEDRAL", "CAPITOL", "CITY HALL", "BOULEVARD"]):
-                    classified_cat = "LANDMARK"
-                else:
-                    classified_cat = "RESTAURANT"
+
+                if weight is not None:
+                    nearby_competitors.append(
+                        {"lat": p["lat"], "lon": p["lon"], "attractiveness": weight}
+                    )
 
                 lgu_businesses.append({
                     "name": p.get("name", "Business"),
@@ -718,6 +821,11 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
         raise ValueError(f"Invalid roster coverage from Birdseye: {roster_coverage}")
     print(f"[Whitespace Radar] Store roster: {len(roster_codes)} LGU(s), coverage={roster_coverage}.")
 
+    taxonomy = fetch_taxonomy_from_birdseye()
+    print(f"[Whitespace Radar] Taxonomy: {len(taxonomy['byCategory'])} categories, "
+          f"{sum(1 for c in taxonomy['byCategory'].values() if c.get('countsAsSupply'))} counting as supply, "
+          f"{len(taxonomy['aliases'])} brand aliases.")
+
     computed_records = compute_candidate_records(
         candidate_lgus=candidate_lgus,
         cleaned_pois=cleaned_pois,
@@ -725,6 +833,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
         avg_store_sales_proxy=avg_store_sales_proxy,
         roster_coverage=roster_coverage,
         roster_lgu_codes=roster_codes,
+        taxonomy=taxonomy,
     )
     print(
         f"[Whitespace Radar] Store roster coverage={roster_coverage}; "

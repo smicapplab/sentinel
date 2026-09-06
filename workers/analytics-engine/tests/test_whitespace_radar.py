@@ -58,6 +58,37 @@ from src.whitespace_radar import (
 import statistics
 import pytest
 
+# Mirrors birdseye.poi_taxonomy_map as seeded by scripts/seed-poi-weights.ts.
+# Injected explicitly rather than defaulted inside the model: a fallback taxonomy in
+# production code is the divergence this whole change removed.
+# test_taxonomy_fixture_matches_supply_contract below guards the parts that matter.
+TEST_TAXONOMY = {
+    "byType": {
+        "pizza_restaurant": {"category": "PIZZA", "countsAsSupply": True, "attractiveness": 1.0},
+        "fast_food_restaurant": {"category": "FAST_FOOD", "countsAsSupply": True, "attractiveness": 1.2},
+        "restaurant": {"category": "RESTAURANT", "countsAsSupply": True, "attractiveness": 0.6},
+        "shopping_mall": {"category": "ANCHOR", "countsAsSupply": True, "attractiveness": 1.5},
+        "school": {"category": "EDUCATION", "countsAsSupply": False, "attractiveness": None},
+        "hospital": {"category": "HOSPITAL", "countsAsSupply": False, "attractiveness": None},
+    },
+    "byCategory": {
+        "PIZZA": {"category": "PIZZA", "countsAsSupply": True, "attractiveness": 1.0},
+        "FAST_FOOD": {"category": "FAST_FOOD", "countsAsSupply": True, "attractiveness": 1.2},
+        "RESTAURANT": {"category": "RESTAURANT", "countsAsSupply": True, "attractiveness": 0.6},
+        "ANCHOR": {"category": "ANCHOR", "countsAsSupply": True, "attractiveness": 1.5},
+        "EDUCATION": {"category": "EDUCATION", "countsAsSupply": False, "attractiveness": None},
+        "HOSPITAL": {"category": "HOSPITAL", "countsAsSupply": False, "attractiveness": None},
+        "LANDMARK": {"category": "LANDMARK", "countsAsSupply": False, "attractiveness": None},
+    },
+    "aliases": {
+        "jollibee": "Jollibee", "mcdonalds": "McDonald's", "greenwich": "Greenwich",
+        "chowking": "Chowking", "mang inasal": "Mang Inasal", "pizza hut": "Pizza Hut",
+        "shakeys": "Shakey's", "shakeys pizza": "Shakey's", "shakeys pizza parlor": "Shakey's",
+        "angels pizza": "Angel's Pizza",
+    },
+}
+
+
 def test_engels_law_elasticity():
     """Engel's Law: higher median income increases the category spend ratio non-linearly (gamma = 0.65)."""
     base_ratio = 0.05
@@ -215,7 +246,7 @@ def test_lgu_with_no_competitor_coverage_is_not_scored():
         "avg_family_income_annual": 240000, "cluster_lat": 11.0064, "cluster_lon": 124.6075,
         "flood_risk_level": "LOW", "rationale": "test",
     }]
-    assert compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[]) == []
+    assert compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[], taxonomy=TEST_TAXONOMY) == []
 
 
 def test_no_synthetic_competitors_are_fabricated():
@@ -229,7 +260,7 @@ def test_no_synthetic_competitors_are_fabricated():
     }]
     # With no POI coverage the LGU is skipped entirely rather than scored, so
     # there is no record in which a competitor could have been fabricated.
-    assert compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[]) == []
+    assert compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[], taxonomy=TEST_TAXONOMY) == []
 
 
 def test_every_record_carries_its_confidence_band():
@@ -241,7 +272,7 @@ def test_every_record_carries_its_confidence_band():
         "avg_family_income_annual": 345000, "cluster_lat": 9.3068, "cluster_lon": 123.3054,
         "flood_risk_level": "LOW", "rationale": "test",
     }]
-    for rec in compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[]):
+    for rec in compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[], taxonomy=TEST_TAXONOMY):
         assert "confidenceBandHalfwidth" in rec
         assert "bandMethod" in rec
         assert "coverageIndex" in rec
@@ -397,7 +428,7 @@ def test_candidate_scoring_is_differentiated_and_never_saturates():
     """
     from src.whitespace_radar import compute_candidate_records
 
-    records = compute_candidate_records(CANDIDATE_LGUS, _coverage_pois(CANDIDATE_LGUS))
+    records = compute_candidate_records(CANDIDATE_LGUS, _coverage_pois(CANDIDATE_LGUS), taxonomy=TEST_TAXONOMY)
     assert len(records) == 4
 
     scores = [r["opportunityScore"] for r in records]
@@ -418,7 +449,7 @@ def test_trade_area_geometry_is_not_synthesised():
     """
     from src.whitespace_radar import compute_candidate_records
 
-    for r in compute_candidate_records(CANDIDATE_LGUS, _coverage_pois(CANDIDATE_LGUS)):
+    for r in compute_candidate_records(CANDIDATE_LGUS, _coverage_pois(CANDIDATE_LGUS), taxonomy=TEST_TAXONOMY):
         poly = r["goldenPolygonGeojson"]
         assert "tradeRadiusKm" in poly
         assert "geometry" not in poly, "no synthesised polygon may be emitted"
@@ -480,7 +511,11 @@ def test_run_whitespace_radar_e2e_orchestration():
              patch("src.whitespace_radar.fetch_lgus_from_birdseye") as mock_fetch_lgus, \
                  patch("src.whitespace_radar.fetch_pois_from_birdseye") as mock_fetch_pois, \
              patch("src.whitespace_radar.fetch_store_roster_from_birdseye") as mock_fetch_roster, \
+             patch("src.whitespace_radar.fetch_taxonomy_from_birdseye") as mock_fetch_taxonomy, \
              patch("requests.post") as mock_http_post:
+            # The taxonomy is fetched, never defaulted. Mocking it here rather than
+            # letting the model fall back to a local chain is the point of the change.
+            mock_fetch_taxonomy.return_value = TEST_TAXONOMY
             # Roster coverage is asserted by the import, so the pipeline must ask
             # Birdseye for it rather than inferring it from the store rows.
             mock_fetch_roster.return_value = ("COMPLETE", {"PH-126303000"})
@@ -526,7 +561,7 @@ def test_candidate_records_serialize_only_real_pois():
         {"name": "SM City Legazpi", "brand": None, "category": "ANCHOR",
          "lat": 13.141, "lon": 123.744, "address": "Imelda Roces Ave"},
     ]
-    records = compute_candidate_records(CANDIDATE_LGUS, sample_pois)
+    records = compute_candidate_records(CANDIDATE_LGUS, sample_pois, taxonomy=TEST_TAXONOMY)
 
     total_features = 0
     for r in records:
@@ -548,7 +583,7 @@ def test_no_competitor_points_without_poi_coverage():
     """The synthetic pin generator is gone: an empty crawl yields an empty map."""
     from src.whitespace_radar import compute_candidate_records
 
-    assert compute_candidate_records(CANDIDATE_LGUS, []) == []
+    assert compute_candidate_records(CANDIDATE_LGUS, [], taxonomy=TEST_TAXONOMY) == []
 
 
 def test_flood_zones_come_from_upstream_or_are_omitted():
@@ -560,7 +595,7 @@ def test_flood_zones_come_from_upstream_or_are_omitted():
     from src.whitespace_radar import compute_candidate_records
 
     pois = _coverage_pois([CANDIDATE_LGUS[0]])
-    without = compute_candidate_records([dict(CANDIDATE_LGUS[0])], pois)
+    without = compute_candidate_records([dict(CANDIDATE_LGUS[0])], pois, taxonomy=TEST_TAXONOMY)
     assert "floodZones" not in without[0]["layersGeojson"]
 
     upstream = dict(CANDIDATE_LGUS[0])
@@ -572,5 +607,105 @@ def test_flood_zones_come_from_upstream_or_are_omitted():
             "geometry": {"type": "Polygon", "coordinates": [[[123.3, 9.3], [123.31, 9.3], [123.31, 9.31], [123.3, 9.3]]]},
         }],
     }
-    with_zones = compute_candidate_records([upstream], pois)
+    with_zones = compute_candidate_records([upstream], pois, taxonomy=TEST_TAXONOMY)
     assert "floodZones" in with_zones[0]["layersGeojson"]
+
+
+# ---------------------------------------------------------------------------
+# Competitor supply and crawl-probe roster (spec 2026-09-07)
+# ---------------------------------------------------------------------------
+
+def test_generic_restaurant_contributes_to_supply():
+    """
+    The defect this replaced: the classification chain ended in a bare
+    `else: RESTAURANT` with no append, so 2,057 POIs -- 52% of all dining and anchor
+    POIs -- were drawn as competitor pins and then dropped before the supply term.
+    """
+    from src.whitespace_radar import classify_poi, supply_weight
+    poi = {"name": "Some Independent Carinderia", "category": "RESTAURANT", "rawTypes": ["restaurant"]}
+    cat = classify_poi(poi, TEST_TAXONOMY)
+    assert cat == "RESTAURANT"
+    assert supply_weight(cat, TEST_TAXONOMY) == 0.6
+
+
+def test_supply_term_strictly_increases_when_a_restaurant_is_added():
+    from src.whitespace_radar import compute_saturation_index
+    centroid = (9.3068, 123.3054)
+    base = [{"lat": 9.3100, "lon": 123.3080, "attractiveness": 1.0}]
+    more = base + [{"lat": 9.3110, "lon": 123.3090, "attractiveness": 0.6}]
+    # More supply means a lower (less attractive) saturation score, strictly.
+    assert compute_saturation_index(5e8, more, centroid) < compute_saturation_index(5e8, base, centroid)
+
+
+def test_demand_generators_never_count_as_supply():
+    """A school raises demand. Counting it as competing supply would invert its meaning."""
+    from src.whitespace_radar import supply_weight
+    assert supply_weight("EDUCATION", TEST_TAXONOMY) is None
+    assert supply_weight("HOSPITAL", TEST_TAXONOMY) is None
+    assert supply_weight("LANDMARK", TEST_TAXONOMY) is None
+
+
+def test_crawl_probe_excludes_the_brand_being_searched_for():
+    """
+    Pizza Hut in its own coverage denominator meant an LGU where Pizza Hut is absent --
+    the exact condition this feature exists to find -- lost 1/11 of its coverage and got
+    a wider confidence band. The feature penalised its own target.
+    """
+    from src.whitespace_radar import CRAWL_PROBE_BRANDS
+    assert "Pizza Hut" not in CRAWL_PROBE_BRANDS
+
+
+def test_crawl_probe_excludes_sparsely_present_brands():
+    """
+    The probe is an instrument check, not a competitor list. Measured presence across the
+    base 20 (2026-09-07): Domino's 5 LGUs, Yellow Cab 7, Pizza Hut 4. Their absence is a
+    finding about the market, not evidence the crawl misfired.
+    """
+    from src.whitespace_radar import CRAWL_PROBE_BRANDS
+    for sparse in ("Domino's", "Yellow Cab", "Angel's Pizza"):
+        assert sparse not in CRAWL_PROBE_BRANDS
+    assert set(CRAWL_PROBE_BRANDS) == {"Jollibee", "McDonald's", "Greenwich", "Chowking", "Mang Inasal"}
+
+
+def test_absent_sparse_brand_does_not_reduce_coverage():
+    """A market with no Domino's must not read as a failed crawl."""
+    from src.whitespace_radar import competitor_coverage_fractions
+    businesses = [
+        {"name": "Jollibee", "brand": "Jollibee", "lat": 9.31, "lon": 123.31},
+        {"name": "McDonald's", "brand": "McDonald's", "lat": 9.31, "lon": 123.31},
+        {"name": "Greenwich", "brand": "Greenwich", "lat": 9.31, "lon": 123.31},
+        {"name": "Chowking", "brand": "Chowking", "lat": 9.31, "lon": 123.31},
+        {"name": "Mang Inasal", "brand": "Mang Inasal", "lat": 9.31, "lon": 123.31},
+    ]
+    c_brand, c_geo = competitor_coverage_fractions(businesses, businesses)
+    assert c_brand == 1.0, "all five probe brands observed -> crawl is demonstrably working"
+    assert c_geo == 1.0
+
+
+def test_brand_aliases_resolve_variant_spellings_to_one_brand():
+    """
+    Naive normalisation over-splits: Shakey's appears as three distinct strings in live
+    data (shakeys pizza parlor 14, shakeys 7, shakeys pizza 3), so one chain in 12 LGUs
+    reads as three chains.
+    """
+    from src.whitespace_radar import canonical_brand
+    for variant in ("Shakey's", "Shakey's Pizza", "Shakey's Pizza Parlor - Dumaguete"):
+        assert canonical_brand(variant, TEST_TAXONOMY) == "Shakey's"
+
+
+def test_model_refuses_to_score_without_a_taxonomy():
+    """
+    Fails closed. A default keyword chain here would drift from Birdseye's table silently
+    and nobody would find out until a brand had gone unattributed for weeks -- which is
+    precisely how Angel's Pizza lost 16 branches across 13 LGUs.
+    """
+    import pytest
+    from src.whitespace_radar import compute_candidate_records
+    with pytest.raises(ValueError, match="requires a taxonomy"):
+        compute_candidate_records([], [], taxonomy=None)
+
+
+def test_taxonomy_fixture_matches_supply_contract():
+    """Guards the fixture against drifting from the seeded weights it mirrors."""
+    supply = {k: v["attractiveness"] for k, v in TEST_TAXONOMY["byCategory"].items() if v["countsAsSupply"]}
+    assert supply == {"PIZZA": 1.0, "FAST_FOOD": 1.2, "RESTAURANT": 0.6, "ANCHOR": 1.5}
