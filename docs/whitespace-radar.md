@@ -208,3 +208,53 @@ Upon successful persistence, Sentinel dispatches:
   1. **Taxonomy Separation**: Disaggregated POI taxonomy into `PIZZA`, `FAST_FOOD`, `RESTAURANT`, `ANCHOR`, `EDUCATION`, `HOSPITAL`, and `LANDMARK`. Huff Gravity competition scoring strictly isolates QSR/dining anchors without skewing pizza supply calculations.
   2. **UP-NOAH Flood Zones**: Hydrological geohazard polygons (riverine inundation, coastal surge) are serialized under `layersGeojson["floodZones"]` for all candidate LGUs with explicit severity tiers (`LOW`, `MEDIUM`, `HIGH`).
   3. **Mapbox Traffic & Sleek Pins**: The UI renders custom drop-shadowed SVG teardrop pins and overlays real-time Mapbox vector traffic flow (`mapbox/traffic-day-v2`), retiring the obstructive 3km delivery circles.
+
+---
+
+## Model changes (2026-09-07 to 2026-09-09)
+
+### Competitor supply is uncapped; the crawl probe is not
+
+`BRAND_ROSTER` split into two things that were wrongly one:
+
+- **Supply** — every dining/QSR POI reaches `compute_saturation_index`, weighted from
+  `poi_taxonomy_map`. Previously a bare `else: RESTAURANT` with no append silently dropped
+  2,057 POIs, 52% of all dining and anchor POIs.
+- **`CRAWL_PROBE_BRANDS`** — a fixed 5 (Jollibee, McDonald's, Greenwich, Chowking, Mang
+  Inasal), each present in ≥16 of 20 LGUs. This is an **instrument check**, not a
+  competitor list: failing to see Jollibee means the crawl failed.
+
+**Pizza Hut was removed from its own denominator.** It appears in only 4 of 20 LGUs, so an
+LGU where it is absent — the exact condition the feature exists to find — was losing 1/11
+of its coverage and getting a wider band. The feature was penalising its own target.
+
+### Transient demand
+
+`compute_transient_population(arrivals, days)` converts arrivals to resident-equivalents,
+feeding the existing demand formula. `AVG_STAY_DAYS = 2.0` is the single asserted constant;
+sensitivity was published at 1/2/3/5/7 days before adoption (ranking stable at 1–3 days).
+
+### Rainfall flood classification is driven by AREA SHARE
+
+`determine_flood_risk_level` keys on `flood_hazard_high_pct_6km`, not
+`flood_hazard_max_class_1km`. The centroid class is 3 for seventeen LGUs and never below 2,
+because a Philippine city centre is nearly always within 1km of a river — it labelled 17 of
+20 HIGH and gave Tagbilaran (1.23% high-hazard area) the same verdict as Butuan (87.45%).
+
+**Scope: rainfall only.** Tacloban reads LOW while being the city Haiyan destroyed by storm
+surge, which is not ingested. Any surface rendering this must name the hazard.
+
+### Sentinel carries no geometry
+
+Flood polygons and the Expansion Zone surface are attached per-LGU by Birdseye and never
+materialised here. Routing flood geometry through this engine put 103MB of JSON into
+`mat_whitespace_radar.layers_geojson`, loaded whole by a process with no
+`max_memory_restart`. Sentinel consumes flood *percentages*; it has never needed polygons.
+Asserted by test.
+
+### What still limits the output
+
+- `pos_daily_store_sales` is empty, so `c_cal` is pinned at 0.3 and nothing is backtested.
+- Both halves of the composite carry `potential_demand`; the score measures market size
+  twice. AC2 at 0.9114 is a crawl fix, not a model fix.
+- Absence rests on the ingested 165-store roster, not a verified national estate.
