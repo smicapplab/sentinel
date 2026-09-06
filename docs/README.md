@@ -25,7 +25,7 @@ Rules:
 
 | Doc | Spec | Plan | Status |
 |---|---|---|---|
-| (none) | | | |
+| [whitespace-radar.md](whitespace-radar.md) | `superpowers/spec/2026-09-05-whitespace-radar-remediation.md` | `superpowers/plan/2026-09-07-competitor-supply-and-brand-roster-plan.md` | Active |
 
 ---
 
