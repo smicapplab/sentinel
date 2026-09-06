@@ -7,14 +7,39 @@
 ---
 
 ## 1. Overview
-The **Whitespace Radar Engine** is Sentinel's retail geomarketing and econometric pipeline. It computes the **Whitespace Opportunity Score (WOS)** for expansion candidate Local Government Units (LGUs) for Pizza Hut in the Philippines.
+The **Whitespace Radar Engine** is Sentinel's retail geomarketing pipeline. It answers two
+questions, in strict order:
 
-It processes:
-1. **Existing Store Roster Check (Step 0)**: Evaluates whether candidate LGUs already possess active operating stores, ensuring zero false-positive recommendations.
-2. **Retail Gap / Leakage Analysis**: Computes signed unmet demand using PSA population, FIES median family income deciles, and an Engel's Law elasticity scaling factor ($\gamma = 0.65$).
-3. **Huff Gravity Model**: Computes spatial capture probability against nearby competitor chains (Shakey's, Domino's, Greenwich) and commercial anchors (Jollibee, McDonald's, SM/Robinsons Malls) using steep distance decay ($\beta = 2.5$) calibrated for Philippine transit friction.
-4. **Decoupled Risk Overlay**: Assesses flood risk and commissary logistics distance as a separate categorical tier, preventing dilution of commercial upside.
-5. **Persistence & Synchronization**: Persists all computed metrics and GeoJSON polygons to Sentinel's `whitespace_opportunities` warehouse table and fires an atomic completion webhook to Birdseye.
+1. **Where is Pizza Hut not present yet?** A filter, not a score.
+2. **Among those, which is the best site?** A ranking over the filtered set.
+
+Question 1 dominates. A false "Pizza Hut is absent here" sends a site team to build beside
+an existing branch, which costs capital; a missed opportunity only costs delay. The store
+roster is therefore the single most important input to the feature.
+
+The pipeline:
+1. **Presence partition (Step 0)**: Classifies every candidate LGU as `PRESENT`, `ABSENT`, or
+   `UNKNOWN` against the Pizza Hut store roster fetched from Birdseye. `ABSENT` is only
+   reachable when roster coverage is `COMPLETE`; absence of a store *record* is not evidence
+   of store *absence*.
+2. **Retail Gap / Leakage Analysis**: Signed unmet demand from PSA population and FIES income,
+   scaled by an Engel's Law elasticity ($\gamma = 0.65$).
+3. **Competitive Saturation Index**: Attractiveness-weighted, distance-decayed competitor
+   supply measured against demand. See 3.2 for why this replaced the Huff capture term.
+4. **Confidence band**: Every score carries a derived uncertainty interval. A score is never
+   emitted without one.
+5. **Persistence & Synchronization**: Writes to `whitespace_opportunities` and fires a
+   completion webhook to Birdseye.
+
+### 1.1 Invariants
+
+- Sentinel makes **zero** direct external HTTP calls. All third-party data is ingested by
+  Birdseye and read over the internal API.
+- **No fabricated data.** There is no synthetic competitor fallback, no hand-drawn flood or
+  trade-area geometry, and no hardcoded store roster. Missing data yields an omitted layer or
+  a widened band, never an invented value.
+- **Absence of evidence is not evidence of absence.** An LGU with no POI coverage is not an
+  LGU with no competitors.
 
 ---
 
@@ -39,12 +64,84 @@ $$\text{Supply} = \sum (\text{Competitors} \times \text{SalesProxy})$$
 $$\text{DemandGap} = \text{Demand} - \text{Supply}$$
 $$\text{DemandGapScore} = 50 + 50 \times \left(\frac{\text{DemandGap}}{\text{MaxAbsGap}}\right) \quad \in [0, 100]$$
 
-### 3.2 Huff Gravity Model
-$$P_i = \frac{A_{\text{candidate}} \cdot d(i, \text{candidate})^{-\beta}}{\sum_{j} A_j \cdot d(i, j)^{-\beta}}$$
-- $\beta = 2.5$: Calibrated for tricycle/jeepney transit friction.
-- $A_j$: Mall anchors = 1.5, Fast food anchors = 1.2, Competitors = 1.0.
+### 3.2 Competitive Saturation Index
 
-> **v1 Known Limitation:** The distance term $d(i, j)$ uses straight-line Haversine rather than network routing distance (OSRM/Valhalla). Standing up a 24/7 self-hosted OSRM container or AWS Batch orchestration for a monthly batch run was deferred to v2 to avoid premature infrastructure tax. Topological barriers (e.g. rivers with a single bridge) are an acknowledged limitation in v1.
+$$\text{WeightedSupply} = \sum_{d_j \le R} \frac{A_j}{(1 + d_j)^{\beta}}, \quad \beta = 2.5,\ R = 6\text{ km}$$
+$$\text{Saturation} = 100 \times \left(1 - e^{-\frac{\text{Demand}}{(\text{WeightedSupply} + 1)\, D_{ref}}}\right) \quad \in [0, 100]$$
+
+Higher means less contested.
+
+**Why this replaced the Huff gravity model.** A single-site Huff model answers "what share
+would a store at point X capture?". We rank **LGUs**, not sites, and there is no candidate
+site — so one had to be fabricated 157 m from the demand centroid, where it always dominated
+the Huff denominator. Every LGU clamped to the same ceiling (`predicted_capture_score = 96.00`
+across all 20), the composite collapsed to a market-size ranking, and the score carried no
+information. The saturation index has no candidate site, so it cannot saturate that way.
+
+`calculate_huff_capture_probability` is retained in the module but is **not called by the LGU
+pipeline**. It is reserved for future site-level drill-down, where real candidate parcels
+exist and the model is the right instrument.
+
+$D_{ref}$ (`D_REF_PHP_PER_SUPPLY_UNIT`) is the one asserted constant in the scoring path.
+It is uncalibrated pending POS data. A sensitivity sweep across a 16x range leaves the top 5
+whitespace ranking unchanged, so the ordering is usable while absolute scores are not.
+
+### 3.3 Presence Partition
+
+`presence_state(lgu_code, roster_coverage, roster_lgu_codes)` returns:
+
+| State | Meaning |
+|---|---|
+| `PRESENT` | Exact `lgu_code` match in the roster |
+| `ABSENT` | Not in roster **and** roster coverage is `COMPLETE` |
+| `UNKNOWN` | Not in roster, coverage below `COMPLETE` — cannot assert absence |
+
+Matching is exact `lgu_code` membership only. Substring city matching is deliberately not
+used: "San Fernando" names three Philippine cities, and an exclusion filter with asymmetric
+cost (a false absence costs store build capital) cannot afford false positives.
+
+### 3.4 Flood Risk Level Classification (Project NOAH)
+
+`flood_risk_level` derives from DOST Project NOAH 100-year rainfall flood hazard indicators
+ingested by Birdseye and consumed via `GET /api/internal/lgus`:
+
+$$\text{flood\_risk\_level} = \begin{cases}
+\text{UNASSESSED}, & \text{if indicators absent} \\
+\text{HIGH}, & \text{if core} \ge 3.0 \text{ or } \text{high\_pct} \ge 20.0\% \\
+\text{MEDIUM}, & \text{if core} \ge 2.0 \text{ or } \text{med\_pct} \ge 25.0\% \\
+\text{LOW}, & \text{otherwise}
+\end{cases}$$
+
+- `FLOOD_CORE_HIGH_CLASS = 3.0`, `FLOOD_CORE_MEDIUM_CLASS = 2.0`
+- `FLOOD_AREA_HIGH_PCT = 20.0`, `FLOOD_AREA_MEDIUM_PCT = 25.0`
+- `flood_hazard_max_class_1km` (commercial core touch) carries primary weight: commercial
+  parcels are points, not broad areas.
+- Absence of NOAH coverage stays `UNASSESSED` (never defaulted to `LOW`).
+- Feeds `mat_whitespace_radar.flood_risk_level` as an executive risk indicator; does NOT
+  enter `compute_composite_wos` and does not alter the opportunity ranking.
+- When Birdseye provides `floodZonesGeojson` on the upstream LGU payload, Sentinel maps it to
+  `flood_zones` and preserves it under `layers_geojson["floodZones"]` for client-side rendering.
+
+
+### 3.5 Confidence Band
+
+$$C = 0.3\,c_{brand} + 0.2\,c_{geo} + 0.3\,c_{inc} + 0.2\,c_{cal}$$
+$$\text{BandHalfwidth} = W_{max}(1 - C), \quad W_{max} = 25$$
+
+| Factor | Meaning |
+|---|---|
+| $c_{brand}$ | Roster brands observed in this LGU / roster size |
+| $c_{geo}$ | Brands observed **with usable coordinates** / roster size |
+| $c_{inc}$ | `1.0` PSA city actual, `0.7` PSA provincial proxy, `0.4` model estimate |
+| $c_{cal}$ | `1.0` if POS-calibrated for the region, else `0.3` |
+
+$c_{brand}$ and $c_{geo}$ are separate because only the latter can feed a distance-weighted
+computation. Collapsing them would let a verified-but-unlocated competitor raise coverage,
+narrow the band, and then be silently dropped by the trade-radius filter — undercounting
+supply while asserting confidence.
+
+`band_method` records which regime produced the interval: `COVERAGE_HEURISTIC` today,
+`EMPIRICAL_RESIDUAL` once POS backtesting replaces $W_{max}$ with a measured residual spread.
 
 ### 3.3 Composite WOS
 $$\text{WOS} = \text{round}(0.50 \times \text{DemandGapScore} + 0.50 \times \text{PredictedCaptureScore}) \quad \in [0, 100]$$
@@ -111,3 +208,53 @@ Upon successful persistence, Sentinel dispatches:
   1. **Taxonomy Separation**: Disaggregated POI taxonomy into `PIZZA`, `FAST_FOOD`, `RESTAURANT`, `ANCHOR`, `EDUCATION`, `HOSPITAL`, and `LANDMARK`. Huff Gravity competition scoring strictly isolates QSR/dining anchors without skewing pizza supply calculations.
   2. **UP-NOAH Flood Zones**: Hydrological geohazard polygons (riverine inundation, coastal surge) are serialized under `layersGeojson["floodZones"]` for all candidate LGUs with explicit severity tiers (`LOW`, `MEDIUM`, `HIGH`).
   3. **Mapbox Traffic & Sleek Pins**: The UI renders custom drop-shadowed SVG teardrop pins and overlays real-time Mapbox vector traffic flow (`mapbox/traffic-day-v2`), retiring the obstructive 3km delivery circles.
+
+---
+
+## Model changes (2026-09-07 to 2026-09-09)
+
+### Competitor supply is uncapped; the crawl probe is not
+
+`BRAND_ROSTER` split into two things that were wrongly one:
+
+- **Supply** — every dining/QSR POI reaches `compute_saturation_index`, weighted from
+  `poi_taxonomy_map`. Previously a bare `else: RESTAURANT` with no append silently dropped
+  2,057 POIs, 52% of all dining and anchor POIs.
+- **`CRAWL_PROBE_BRANDS`** — a fixed 5 (Jollibee, McDonald's, Greenwich, Chowking, Mang
+  Inasal), each present in ≥16 of 20 LGUs. This is an **instrument check**, not a
+  competitor list: failing to see Jollibee means the crawl failed.
+
+**Pizza Hut was removed from its own denominator.** It appears in only 4 of 20 LGUs, so an
+LGU where it is absent — the exact condition the feature exists to find — was losing 1/11
+of its coverage and getting a wider band. The feature was penalising its own target.
+
+### Transient demand
+
+`compute_transient_population(arrivals, days)` converts arrivals to resident-equivalents,
+feeding the existing demand formula. `AVG_STAY_DAYS = 2.0` is the single asserted constant;
+sensitivity was published at 1/2/3/5/7 days before adoption (ranking stable at 1–3 days).
+
+### Rainfall flood classification is driven by AREA SHARE
+
+`determine_flood_risk_level` keys on `flood_hazard_high_pct_6km`, not
+`flood_hazard_max_class_1km`. The centroid class is 3 for seventeen LGUs and never below 2,
+because a Philippine city centre is nearly always within 1km of a river — it labelled 17 of
+20 HIGH and gave Tagbilaran (1.23% high-hazard area) the same verdict as Butuan (87.45%).
+
+**Scope: rainfall only.** Tacloban reads LOW while being the city Haiyan destroyed by storm
+surge, which is not ingested. Any surface rendering this must name the hazard.
+
+### Sentinel carries no geometry
+
+Flood polygons and the Expansion Zone surface are attached per-LGU by Birdseye and never
+materialised here. Routing flood geometry through this engine put 103MB of JSON into
+`mat_whitespace_radar.layers_geojson`, loaded whole by a process with no
+`max_memory_restart`. Sentinel consumes flood *percentages*; it has never needed polygons.
+Asserted by test.
+
+### What still limits the output
+
+- `pos_daily_store_sales` is empty, so `c_cal` is pinned at 0.3 and nothing is backtested.
+- Both halves of the composite carry `potential_demand`; the score measures market size
+  twice. AC2 at 0.9114 is a crawl fix, not a model fix.
+- Absence rests on the ingested 165-store roster, not a verified national estate.

@@ -1,4 +1,40 @@
 import pytest
+
+CANDIDATE_LGUS = [
+    {
+        "lgu_code": "PH-074610000", "lgu_name": "Dumaguete City", "province": "Negros Oriental",
+        "region": "Central Visayas", "income_classification": "2nd Class",
+        "socio_economic_tier": "Mid-Market", "population": 134103,
+        "avg_family_income_annual": 250000, "median_family_income_annual": 200000,
+        "cluster_lat": 9.3068, "cluster_lon": 123.3054, "flood_risk_level": "HIGH",
+        "rationale": "Tourism hub"
+    },
+    {
+        "lgu_code": "PH-050506000", "lgu_name": "Legazpi City", "province": "Albay",
+        "region": "Bicol", "income_classification": "2nd Class",
+        "socio_economic_tier": "Mid-Market", "population": 209533,
+        "avg_family_income_annual": 320000, "median_family_income_annual": 256000,
+        "cluster_lat": 13.1391, "cluster_lon": 123.7505, "flood_risk_level": "MEDIUM",
+        "rationale": "Tourism hub"
+    },
+    {
+        "lgu_code": "PH-175316000", "lgu_name": "Puerto Princesa", "province": "Palawan",
+        "region": "MIMAROPA", "income_classification": "HUC",
+        "socio_economic_tier": "Premium", "population": 307079,
+        "avg_family_income_annual": 395000, "median_family_income_annual": 316000,
+        "cluster_lat": 9.742, "cluster_lon": 118.735, "flood_risk_level": "LOW",
+        "rationale": "HUC"
+    },
+    {
+        "lgu_code": "PH-112319000", "lgu_name": "Tagum City", "province": "Davao del Norte",
+        "region": "Davao Region", "income_classification": "1st Class",
+        "socio_economic_tier": "Emerging", "population": 296202,
+        "avg_family_income_annual": 310000, "median_family_income_annual": 248000,
+        "cluster_lat": 7.442, "cluster_lon": 125.795, "flood_risk_level": "MEDIUM",
+        "rationale": "Growing"
+    }
+]
+
 import math
 from src.whitespace_radar import (
     calculate_elastic_spend_ratio,
@@ -7,11 +43,51 @@ from src.whitespace_radar import (
     haversine_distance_km,
     calculate_huff_capture_probability,
     clean_and_deduplicate_pois,
-    check_has_existing_store,
     compute_composite_wos,
     generate_golden_polygon_geojson,
-    build_sync_payload
+    build_sync_payload,
+    presence_state,
+    roster_lgu_codes_from_stores,
+    compute_saturation_index,
+    compute_coverage_index,
+    compute_confidence_band,
+    competitor_coverage_fractions,
+    compute_candidate_records,
+    W_MAX,
 )
+import statistics
+import pytest
+
+# Mirrors birdseye.poi_taxonomy_map as seeded by scripts/seed-poi-weights.ts.
+# Injected explicitly rather than defaulted inside the model: a fallback taxonomy in
+# production code is the divergence this whole change removed.
+# test_taxonomy_fixture_matches_supply_contract below guards the parts that matter.
+TEST_TAXONOMY = {
+    "byType": {
+        "pizza_restaurant": {"category": "PIZZA", "countsAsSupply": True, "attractiveness": 1.0},
+        "fast_food_restaurant": {"category": "FAST_FOOD", "countsAsSupply": True, "attractiveness": 1.2},
+        "restaurant": {"category": "RESTAURANT", "countsAsSupply": True, "attractiveness": 0.6},
+        "shopping_mall": {"category": "ANCHOR", "countsAsSupply": True, "attractiveness": 1.5},
+        "school": {"category": "EDUCATION", "countsAsSupply": False, "attractiveness": None},
+        "hospital": {"category": "HOSPITAL", "countsAsSupply": False, "attractiveness": None},
+    },
+    "byCategory": {
+        "PIZZA": {"category": "PIZZA", "countsAsSupply": True, "attractiveness": 1.0},
+        "FAST_FOOD": {"category": "FAST_FOOD", "countsAsSupply": True, "attractiveness": 1.2},
+        "RESTAURANT": {"category": "RESTAURANT", "countsAsSupply": True, "attractiveness": 0.6},
+        "ANCHOR": {"category": "ANCHOR", "countsAsSupply": True, "attractiveness": 1.5},
+        "EDUCATION": {"category": "EDUCATION", "countsAsSupply": False, "attractiveness": None},
+        "HOSPITAL": {"category": "HOSPITAL", "countsAsSupply": False, "attractiveness": None},
+        "LANDMARK": {"category": "LANDMARK", "countsAsSupply": False, "attractiveness": None},
+    },
+    "aliases": {
+        "jollibee": "Jollibee", "mcdonalds": "McDonald's", "greenwich": "Greenwich",
+        "chowking": "Chowking", "mang inasal": "Mang Inasal", "pizza hut": "Pizza Hut",
+        "shakeys": "Shakey's", "shakeys pizza": "Shakey's", "shakeys pizza parlor": "Shakey's",
+        "angels pizza": "Angel's Pizza",
+    },
+}
+
 
 def test_engels_law_elasticity():
     """Engel's Law: higher median income increases the category spend ratio non-linearly (gamma = 0.65)."""
@@ -72,21 +148,136 @@ def test_haversine_distance_and_huff_decay():
     )
     assert 0.70 < p_capture <= 1.0
 
-def test_existing_store_gate():
-    """Evaluates real store records by exact LGU code, city name, or store name."""
-    existing_stores = [
-        {"storeNumber": "7110", "name": "Pizza Hut SM Megamall", "city": "Mandaluyong", "lguCode": "PH-137401000"},
-        {"storeNumber": "7001", "name": "Pizza Hut Baguio Session", "city": "Baguio", "lguCode": "PH-141102000"},
-        {"storeNumber": "7222", "name": "Pizza Hut Dumaguete Perdices", "city": "Dumaguete", "lguCode": "PH-074600000"},
+def test_roster_codes_are_exact_match_only():
+    """Substring city matching is gone: 'San Fernando' names three PH cities."""
+    stores = [
+        {"storeNumber": "7222", "name": "Pizza Hut Dumaguete Perdices", "city": "Dumaguete", "lguCode": "PH-074610000"},
     ]
-    
-    # Matches via exact lguCode
-    assert check_has_existing_store("PH-074600000", "Dumaguete City", existing_stores) is True
-    # Matches via city name
-    assert check_has_existing_store("PH-999999999", "Baguio City", existing_stores) is True
-    # Non-existing LGU
-    assert check_has_existing_store("PH-050500000", "Legazpi City", existing_stores) is False
-    assert check_has_existing_store("PH-175300000", "Puerto Princesa", existing_stores) is False
+    codes = roster_lgu_codes_from_stores(stores)
+    assert codes == {"PH-074610000"}
+
+
+def test_presence_is_unknown_when_roster_coverage_is_incomplete():
+    """Absence of a store record is not evidence of store absence."""
+    assert presence_state("PH-074610000", "PARTIAL", set()) == "UNKNOWN"
+    assert presence_state("PH-074610000", "NO_PUBLIC_DATA", set()) == "UNKNOWN"
+
+
+def test_presence_is_absent_only_on_complete_roster_coverage():
+    assert presence_state("PH-074610000", "COMPLETE", set()) == "ABSENT"
+
+
+def test_presence_is_present_on_exact_code_match_regardless_of_coverage():
+    assert presence_state("PH-126303000", "PARTIAL", {"PH-126303000"}) == "PRESENT"
+    assert presence_state("PH-126303000", "COMPLETE", {"PH-126303000"}) == "PRESENT"
+
+
+def test_saturation_index_varies_across_competitive_landscapes():
+    """Regression test for the 96.00-everywhere defect."""
+    centroid = (9.308, 123.308)
+    demand = 1_000_000_000.0
+    contested = [{"lat": 9.309, "lon": 123.309, "attractiveness": 1.5} for _ in range(10)]
+    sparse = [{"lat": 9.309, "lon": 123.309, "attractiveness": 1.5}]
+
+    high = compute_saturation_index(demand, sparse, centroid)
+    low = compute_saturation_index(demand, contested, centroid)
+
+    assert high > low, "a less contested market must score higher"
+    assert 0.0 <= low <= 100.0 and 0.0 <= high <= 100.0
+
+
+def test_saturation_index_does_not_saturate_across_a_cohort():
+    """The score must carry information, not collapse to a constant."""
+    centroid = (9.308, 123.308)
+    scores = [
+        compute_saturation_index(1_000_000_000.0,
+                                 [{"lat": 9.309, "lon": 123.309, "attractiveness": 1.0}] * n,
+                                 centroid)
+        for n in (1, 3, 6, 12)
+    ]
+    assert statistics.stdev(scores) > 0.0, "capture term collapsed to a constant again"
+
+
+def test_uncoordinated_competitor_cannot_reach_the_saturation_model():
+    """Silently skipping it would undercount supply while coverage claims confidence."""
+    with pytest.raises(ValueError, match="without coordinates"):
+        compute_saturation_index(1e9, [{"name": "Jollibee", "attractiveness": 1.0}], (9.308, 123.308))
+
+
+def test_distant_competitors_matter_less_than_adjacent_ones():
+    centroid = (9.308, 123.308)
+    near = [{"lat": 9.309, "lon": 123.309, "attractiveness": 1.0}]
+    far = [{"lat": 9.360, "lon": 123.360, "attractiveness": 1.0}]
+    assert compute_saturation_index(1e9, far, centroid) > compute_saturation_index(1e9, near, centroid)
+
+
+def test_confidence_band_widens_as_coverage_falls():
+    assert compute_confidence_band(1.0)[0] == 0.0
+    assert compute_confidence_band(0.0)[0] == W_MAX
+    assert compute_confidence_band(0.5)[0] == round(W_MAX * 0.5, 2)
+    assert compute_confidence_band(0.5)[1] == "COVERAGE_HEURISTIC"
+
+
+def test_coverage_index_weights_brand_and_geo_separately():
+    assert compute_coverage_index(1.0, 1.0, 1.0, 1.0) == pytest.approx(1.0)
+    assert compute_coverage_index(0.0, 0.0, 0.4, 0.3) == pytest.approx(0.18)
+
+
+def test_geo_coverage_never_exceeds_brand_coverage():
+    businesses = [
+        {"brand": "Jollibee", "lat": 9.30, "lon": 123.30},
+        {"brand": "Shakey's", "lat": None, "lon": None},
+    ]
+    c_brand, c_geo = competitor_coverage_fractions([], businesses)
+    assert c_geo <= c_brand
+
+
+def test_lgu_with_no_competitor_coverage_is_not_scored():
+    """
+    Regression: a failed crawl produced the top-ranked recommendation. Zero
+    competitors reads as zero supply, hence maximum unmet demand, hence the
+    highest score. Observed live when Ormoc returned 1 POI against 235-276 for
+    every other city and ranked first.
+    """
+    lgus = [{
+        "lgu_code": "PH-083738000", "lgu_name": "Ormoc City", "province": "Leyte", "region": "VIII",
+        "income_classification": "1st Class", "socio_economic_tier": "Mid",
+        "population": 238545, "median_family_income_annual": 192425,
+        "avg_family_income_annual": 240000, "cluster_lat": 11.0064, "cluster_lon": 124.6075,
+        "flood_risk_level": "LOW", "rationale": "test",
+    }]
+    assert compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[], taxonomy=TEST_TAXONOMY) == []
+
+
+def test_no_synthetic_competitors_are_fabricated():
+    """An LGU with no POI coverage must not receive invented competitors."""
+    lgus = [{
+        "lgu_code": "PH-999999999", "lgu_name": "Nowhere City", "province": "X", "region": "Y",
+        "income_classification": "3rd Class", "socio_economic_tier": "Mid",
+        "population": 100000, "median_family_income_annual": 250000,
+        "avg_family_income_annual": 300000, "cluster_lat": 10.0, "cluster_lon": 120.0,
+        "flood_risk_level": "LOW", "rationale": "test",
+    }]
+    # With no POI coverage the LGU is skipped entirely rather than scored, so
+    # there is no record in which a competitor could have been fabricated.
+    assert compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[], taxonomy=TEST_TAXONOMY) == []
+
+
+def test_every_record_carries_its_confidence_band():
+    """A score must never be serialisable without its band."""
+    lgus = [{
+        "lgu_code": "PH-074610000", "lgu_name": "Dumaguete City", "province": "Negros Oriental",
+        "region": "VII", "income_classification": "3rd Class", "socio_economic_tier": "Mid",
+        "population": 134103, "median_family_income_annual": 276000,
+        "avg_family_income_annual": 345000, "cluster_lat": 9.3068, "cluster_lon": 123.3054,
+        "flood_risk_level": "LOW", "rationale": "test",
+    }]
+    for rec in compute_candidate_records(lgus, cleaned_pois=[], existing_stores=[], taxonomy=TEST_TAXONOMY):
+        assert "confidenceBandHalfwidth" in rec
+        assert "bandMethod" in rec
+        assert "coverageIndex" in rec
+        assert "presenceState" in rec
+
 
 def test_google_places_data_hygiene_and_spatial_dedup():
     """Filters out permanently/temporarily closed locations using businessStatus and deduplicates pins within 50m."""
@@ -218,32 +409,51 @@ def test_real_database_stores_schema_query():
     except Exception as e:
         pytest.skip(f"Postgres database not reachable for schema integration test: {e}")
 
-def test_candidate_scoring_differentiation_and_terrestrial_polygons():
-    """Validates that candidate LGUs produce differentiated scores (never 100) and terrestrial corridor polygons."""
+
+def _coverage_pois(lgus):
+    """One competitor per LGU centroid, so LGUs are not skipped for lack of coverage."""
+    out = []
+    for i, l in enumerate(lgus):
+        out.append({"name": f"Rival Pizza {i}", "brand": "Shakey's", "category": "PIZZA",
+                    "lat": l["cluster_lat"] + 0.004, "lon": l["cluster_lon"] + 0.004})
+        out.append({"name": f"Rival QSR {i}", "brand": "Jollibee", "category": "ANCHOR",
+                    "lat": l["cluster_lat"] + 0.006, "lon": l["cluster_lon"] - 0.005})
+    return out
+
+def test_candidate_scoring_is_differentiated_and_never_saturates():
+    """
+    Scores must differ across markets and must not pile up at a ceiling. This is
+    the regression guard for the defect where predicted_capture_score was 96.00
+    for every LGU and the composite reduced to a market-size ranking.
+    """
     from src.whitespace_radar import compute_candidate_records
-    
-    records = compute_candidate_records([])
+
+    records = compute_candidate_records(CANDIDATE_LGUS, _coverage_pois(CANDIDATE_LGUS), taxonomy=TEST_TAXONOMY)
     assert len(records) == 4
-    
+
     scores = [r["opportunityScore"] for r in records]
-    # No score should ever be 100/100 (monopoly artifact)
-    for s in scores:
-        assert 70 <= s < 100, f"Score {s} out of expected realistic range [70, 99]"
-        assert s != 100, f"Score is 100: indicates uncalibrated monopoly artifact"
-    
-    # Must have differentiated scores across different markets
+    for sc in scores:
+        assert 0 <= sc <= 100
     assert len(set(scores)) >= 3, f"Scores must be differentiated across LGUs, got {scores}"
-    
-    # Verify terrestrial corridor polygons
-    for r in records:
+
+    capture = [r["predictedCaptureScore"] for r in records]
+    assert statistics.stdev(capture) > 0.0, \
+        f"capture term collapsed to a constant: {capture}"
+
+
+def test_trade_area_geometry_is_not_synthesised():
+    """
+    The hand-drawn per-LGU 'golden polygon' constants are gone. Until a real
+    trade-area source exists we expose a radius, not fabricated geometry that
+    downstream consumers cannot distinguish from survey data.
+    """
+    from src.whitespace_radar import compute_candidate_records
+
+    for r in compute_candidate_records(CANDIDATE_LGUS, _coverage_pois(CANDIDATE_LGUS), taxonomy=TEST_TAXONOMY):
         poly = r["goldenPolygonGeojson"]
-        assert poly["type"] == "Feature"
-        coords = poly["geometry"]["coordinates"][0]
-        assert len(coords) >= 4
-        # Polygons must be bounded terrestrial corridors (< 10 km²), not massive 15km² unconstrained circles
-        props = poly["properties"]
-        area_km2 = props.get("areaKm2") or (props.get("radiusKm", 0) ** 2 * 3.14159)
-        assert area_km2 < 10.0, f"Golden polygon area ({area_km2}) must be bounded terrestrial corridor (< 10 km²)"
+        assert "tradeRadiusKm" in poly
+        assert "geometry" not in poly, "no synthesised polygon may be emitted"
+
 
 def test_huff_zero_capture_does_not_floor_at_50():
     """Validates that a bad or uncompetitive candidate site scales to 0.0 without artificial 50-point floor."""
@@ -298,16 +508,23 @@ def test_run_whitespace_radar_e2e_orchestration():
         mock_conn.cursor.return_value.__enter__.return_value = mock_cur
 
         with patch("src.whitespace_radar.get_connection") as mock_get_conn, \
-             patch("requests.get") as mock_http_get, \
+             patch("src.whitespace_radar.fetch_lgus_from_birdseye") as mock_fetch_lgus, \
+                 patch("src.whitespace_radar.fetch_pois_from_birdseye") as mock_fetch_pois, \
+             patch("src.whitespace_radar.fetch_store_roster_from_birdseye") as mock_fetch_roster, \
+             patch("src.whitespace_radar.fetch_taxonomy_from_birdseye") as mock_fetch_taxonomy, \
              patch("requests.post") as mock_http_post:
+            # The taxonomy is fetched, never defaulted. Mocking it here rather than
+            # letting the model fall back to a local chain is the point of the change.
+            mock_fetch_taxonomy.return_value = TEST_TAXONOMY
+            # Roster coverage is asserted by the import, so the pipeline must ask
+            # Birdseye for it rather than inferring it from the store rows.
+            mock_fetch_roster.return_value = ("COMPLETE", {"PH-126303000"})
 
             mock_get_conn.return_value.__enter__.return_value = mock_conn
 
-            # Configure requests.get mock
-            mock_get_resp = MagicMock()
-            mock_get_resp.status_code = 200
-            mock_get_resp.json.return_value = mock_pois_resp
-            mock_http_get.return_value = mock_get_resp
+            # Configure fetch mocks
+            mock_fetch_lgus.return_value = [{"lguCode": "074610000", "lguName": "Dumaguete City", "province": "Negros Oriental", "region": "Central Visayas", "incomeClassification": "2nd Class", "population": 134103, "medianFamilyIncomeAnnual": 200000, "clusterLat": 9.3068, "clusterLon": 123.3054}]
+            mock_fetch_pois.return_value = mock_pois_resp["pois"]
 
             # Configure requests.post mock
             mock_post_resp = MagicMock()
@@ -319,10 +536,7 @@ def test_run_whitespace_radar_e2e_orchestration():
             records = run_whitespace_radar(company_id="comp-1", trigger_webhook=True)
 
             # Assertions
-            assert len(records) == 4, "Orchestrator must return 4 candidate records"
-            assert mock_http_get.called, "Must query Birdseye POI endpoint"
-            assert "mock-birdseye:5190/api/internal/places/pois" in mock_http_get.call_args[0][0]
-            assert mock_http_get.call_args[1]["headers"]["x-internal-secret"] == "test_secret_123"
+            assert len(records) == 1, "Orchestrator must return 1 candidate record"
 
             # Verify DB persistence was invoked
             assert mock_cur.execute.called, "Must execute SQL on database"
@@ -334,72 +548,258 @@ def test_run_whitespace_radar_e2e_orchestration():
             assert "mock-birdseye:5190/api/internal/whitespace-radar/sync" in webhook_url
             payload = mock_http_post.call_args[1]["json"]
             assert payload["companyId"] == "comp-1"
-            assert payload["recordCount"] == 4
+            assert payload["recordCount"] == 1
             assert mock_http_post.call_args[1]["headers"]["x-internal-secret"] == "test_secret_123"
 
-def test_candidate_records_contain_competitor_points_geojson():
-    """Validates that candidate records serialize businesses into GeoJSON FeatureCollection matching passed POIs."""
+def test_candidate_records_serialize_only_real_pois():
+    """Competitor pins must mirror the POIs supplied, and nothing else."""
     from src.whitespace_radar import compute_candidate_records
-    
-    # 1. Test with live POIs passed in
+
     sample_pois = [
-        {"name": "Shakey's Pizza Dumaguete", "category": "PIZZA", "lat": 9.308, "lon": 123.308, "address": "Downtown"},
-        {"name": "SM City Legazpi", "category": "ANCHOR", "lat": 13.141, "lon": 123.744, "address": "Imelda Roces Ave"},
+        {"name": "Shakey's Pizza Dumaguete", "brand": "Shakey's", "category": "PIZZA",
+         "lat": 9.308, "lon": 123.308, "address": "Downtown"},
+        {"name": "SM City Legazpi", "brand": None, "category": "ANCHOR",
+         "lat": 13.141, "lon": 123.744, "address": "Imelda Roces Ave"},
     ]
-    records = compute_candidate_records(sample_pois)
+    records = compute_candidate_records(CANDIDATE_LGUS, sample_pois, taxonomy=TEST_TAXONOMY)
+
+    total_features = 0
     for r in records:
-        layers = r["layersGeojson"]
-        assert "competitorPoints" in layers, "layersGeojson must contain competitorPoints"
-        comp_points = layers["competitorPoints"]
+        comp_points = r["layersGeojson"]["competitorPoints"]
         assert comp_points["type"] == "FeatureCollection"
-        features = comp_points["features"]
-        assert len(features) > 0, f"Candidate {r['lguName']} should have competitor point features"
-        
-        # Verify RFC 7946 GeoJSON format
-        for feat in features:
+        for feat in comp_points["features"]:
+            total_features += 1
             assert feat["type"] == "Feature"
             assert feat["geometry"]["type"] == "Point"
-            coords = feat["geometry"]["coordinates"]
-            assert len(coords) == 2
-            # Longitude, Latitude ordering
-            assert -180 <= coords[0] <= 180
-            assert -90 <= coords[1] <= 90
-            props = feat["properties"]
-            assert "name" in props
-            assert "category" in props
-            assert props["category"] in ("PIZZA", "ANCHOR", "FAST_FOOD")
+            lon, lat = feat["geometry"]["coordinates"]
+            assert -180 <= lon <= 180 and -90 <= lat <= 90
+            assert feat["properties"]["name"] in {p["name"] for p in sample_pois}
 
-    # 2. Test fallback baseline mode (empty POIs passed)
-    fallback_records = compute_candidate_records([])
-    for r in fallback_records:
-        features = r["layersGeojson"]["competitorPoints"]["features"]
-        # Expected fallback counts = pizza + anchor + fastfood
-        counts = r["competitorCounts"]
-        expected_count = counts["pizza"] + counts["anchors"] + counts["fastfood"]
-        assert len(features) == expected_count, f"Features length {len(features)} must match total counts {expected_count}"
+    assert total_features > 0, "supplied POIs must appear as competitor points"
+    assert total_features <= len(sample_pois), "no POI may be duplicated or invented"
 
-def test_candidate_records_contain_flood_zones_geojson():
-    """Validates that candidate records serialize UP-NOAH flood hazard zones into GeoJSON FeatureCollection."""
+
+def test_no_competitor_points_without_poi_coverage():
+    """The synthetic pin generator is gone: an empty crawl yields an empty map."""
     from src.whitespace_radar import compute_candidate_records
 
-    records = compute_candidate_records([])
-    for r in records:
-        layers = r["layersGeojson"]
-        assert "floodZones" in layers, "layersGeojson must contain floodZones"
-        flood_zones = layers["floodZones"]
-        assert flood_zones["type"] == "FeatureCollection"
-        features = flood_zones["features"]
-        assert len(features) > 0, f"Candidate {r['lguName']} should have flood hazard features"
+    assert compute_candidate_records(CANDIDATE_LGUS, [], taxonomy=TEST_TAXONOMY) == []
 
-        feat = features[0]
-        assert feat["type"] == "Feature"
-        assert feat["geometry"]["type"] == "Polygon"
-        coords = feat["geometry"]["coordinates"][0]
-        assert len(coords) >= 4, "Polygon must have at least 4 coordinate pairs (closed linear ring)"
-        assert coords[0] == coords[-1], "Polygon must be closed"
 
-        props = feat["properties"]
-        assert "name" in props
-        assert "severity" in props
-        assert props["severity"] in ("LOW", "MEDIUM", "HIGH")
-        assert "hazardType" in props
+def test_flood_geometry_is_never_materialised_by_sentinel():
+    """
+    Was: "flood geometry is sourced from Birdseye's PAGASA connector and carried through".
+    That is no longer true, deliberately.
+
+    The hand-drawn FLOOD_HAZARD_ZONES dict is still gone -- absent data means no layer, not
+    a fabricated polygon -- but Sentinel now carries NO flood geometry at all, even when
+    upstream supplies it. Routing it through here put multi-megabyte polygons into
+    mat_whitespace_radar.layers_geojson (20 rows, 103 MB of JSON) in a process with no
+    memory ceiling. Geometry is attached per-LGU by Birdseye's detail endpoint instead.
+    """
+    from src.whitespace_radar import compute_candidate_records
+
+    pois = _coverage_pois([CANDIDATE_LGUS[0]])
+    without = compute_candidate_records([dict(CANDIDATE_LGUS[0])], pois, taxonomy=TEST_TAXONOMY)
+    assert "floodZones" not in without[0]["layersGeojson"]
+
+    # Even when handed geometry, it must not be materialised.
+    upstream = dict(CANDIDATE_LGUS[0])
+    upstream["flood_zones"] = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {"hazardLevel": "HIGH"},
+            "geometry": {"type": "Polygon", "coordinates": [[[123.3, 9.3], [123.31, 9.3], [123.31, 9.31], [123.3, 9.3]]]},
+        }],
+    }
+    with_zones = compute_candidate_records([upstream], pois, taxonomy=TEST_TAXONOMY)
+    assert "floodZones" not in with_zones[0]["layersGeojson"]
+
+
+def test_fetch_upstream_lgus_maps_flood_zones_geojson(monkeypatch):
+    """
+    Birdseye provides floodZonesGeojson from master_ph_lgus.
+    fetch_lgus_from_birdseye must carry this as flood_zones.
+    """
+    import requests
+    from src.whitespace_radar import fetch_lgus_from_birdseye
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {
+                "success": True,
+                "data": [{
+                    "lguCode": "PH-074610000",
+                    "floodZonesGeojson": {"type": "FeatureCollection", "features": []}
+                }],
+                "transientArrivals": {},
+                "floodHazard": {}
+            }
+
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setenv("INTERNAL_API_SECRET", "test-secret")
+
+    lgus = fetch_lgus_from_birdseye("comp-1")
+    assert len(lgus) == 1
+    assert lgus[0]["flood_zones"] == {"type": "FeatureCollection", "features": []}
+
+
+# ---------------------------------------------------------------------------
+# Competitor supply and crawl-probe roster (spec 2026-09-07)
+# ---------------------------------------------------------------------------
+
+def test_generic_restaurant_contributes_to_supply():
+    """
+    The defect this replaced: the classification chain ended in a bare
+    `else: RESTAURANT` with no append, so 2,057 POIs -- 52% of all dining and anchor
+    POIs -- were drawn as competitor pins and then dropped before the supply term.
+    """
+    from src.whitespace_radar import classify_poi, supply_weight
+    poi = {"name": "Some Independent Carinderia", "category": "RESTAURANT", "rawTypes": ["restaurant"]}
+    cat = classify_poi(poi, TEST_TAXONOMY)
+    assert cat == "RESTAURANT"
+    assert supply_weight(cat, TEST_TAXONOMY) == 0.6
+
+
+def test_supply_term_strictly_increases_when_a_restaurant_is_added():
+    from src.whitespace_radar import compute_saturation_index
+    centroid = (9.3068, 123.3054)
+    base = [{"lat": 9.3100, "lon": 123.3080, "attractiveness": 1.0}]
+    more = base + [{"lat": 9.3110, "lon": 123.3090, "attractiveness": 0.6}]
+    # More supply means a lower (less attractive) saturation score, strictly.
+    assert compute_saturation_index(5e8, more, centroid) < compute_saturation_index(5e8, base, centroid)
+
+
+def test_demand_generators_never_count_as_supply():
+    """A school raises demand. Counting it as competing supply would invert its meaning."""
+    from src.whitespace_radar import supply_weight
+    assert supply_weight("EDUCATION", TEST_TAXONOMY) is None
+    assert supply_weight("HOSPITAL", TEST_TAXONOMY) is None
+    assert supply_weight("LANDMARK", TEST_TAXONOMY) is None
+
+
+def test_crawl_probe_excludes_the_brand_being_searched_for():
+    """
+    Pizza Hut in its own coverage denominator meant an LGU where Pizza Hut is absent --
+    the exact condition this feature exists to find -- lost 1/11 of its coverage and got
+    a wider confidence band. The feature penalised its own target.
+    """
+    from src.whitespace_radar import CRAWL_PROBE_BRANDS
+    assert "Pizza Hut" not in CRAWL_PROBE_BRANDS
+
+
+def test_crawl_probe_excludes_sparsely_present_brands():
+    """
+    The probe is an instrument check, not a competitor list. Measured presence across the
+    base 20 (2026-09-07): Domino's 5 LGUs, Yellow Cab 7, Pizza Hut 4. Their absence is a
+    finding about the market, not evidence the crawl misfired.
+    """
+    from src.whitespace_radar import CRAWL_PROBE_BRANDS
+    for sparse in ("Domino's", "Yellow Cab", "Angel's Pizza"):
+        assert sparse not in CRAWL_PROBE_BRANDS
+    assert set(CRAWL_PROBE_BRANDS) == {"Jollibee", "McDonald's", "Greenwich", "Chowking", "Mang Inasal"}
+
+
+def test_absent_sparse_brand_does_not_reduce_coverage():
+    """A market with no Domino's must not read as a failed crawl."""
+    from src.whitespace_radar import competitor_coverage_fractions
+    businesses = [
+        {"name": "Jollibee", "brand": "Jollibee", "lat": 9.31, "lon": 123.31},
+        {"name": "McDonald's", "brand": "McDonald's", "lat": 9.31, "lon": 123.31},
+        {"name": "Greenwich", "brand": "Greenwich", "lat": 9.31, "lon": 123.31},
+        {"name": "Chowking", "brand": "Chowking", "lat": 9.31, "lon": 123.31},
+        {"name": "Mang Inasal", "brand": "Mang Inasal", "lat": 9.31, "lon": 123.31},
+    ]
+    c_brand, c_geo = competitor_coverage_fractions(businesses, businesses)
+    assert c_brand == 1.0, "all five probe brands observed -> crawl is demonstrably working"
+    assert c_geo == 1.0
+
+
+def test_brand_aliases_resolve_variant_spellings_to_one_brand():
+    """
+    Naive normalisation over-splits: Shakey's appears as three distinct strings in live
+    data (shakeys pizza parlor 14, shakeys 7, shakeys pizza 3), so one chain in 12 LGUs
+    reads as three chains.
+    """
+    from src.whitespace_radar import canonical_brand
+    for variant in ("Shakey's", "Shakey's Pizza", "Shakey's Pizza Parlor - Dumaguete"):
+        assert canonical_brand(variant, TEST_TAXONOMY) == "Shakey's"
+
+
+def test_model_refuses_to_score_without_a_taxonomy():
+    """
+    Fails closed. A default keyword chain here would drift from Birdseye's table silently
+    and nobody would find out until a brand had gone unattributed for weeks -- which is
+    precisely how Angel's Pizza lost 16 branches across 13 LGUs.
+    """
+    import pytest
+    from src.whitespace_radar import compute_candidate_records
+    with pytest.raises(ValueError, match="requires a taxonomy"):
+        compute_candidate_records([], [], taxonomy=None)
+
+
+def test_taxonomy_fixture_matches_supply_contract():
+    """Guards the fixture against drifting from the seeded weights it mirrors."""
+    supply = {k: v["attractiveness"] for k, v in TEST_TAXONOMY["byCategory"].items() if v["countsAsSupply"]}
+    assert supply == {"PIZZA": 1.0, "FAST_FOOD": 1.2, "RESTAURANT": 0.6, "ANCHOR": 1.5}
+
+
+# ---------------------------------------------------------------------------
+# Transient demand from transport arrivals (spec 2026-09-08)
+# ---------------------------------------------------------------------------
+
+def test_transient_population_converts_arrivals_to_resident_equivalent():
+    from src.whitespace_radar import compute_transient_population
+    # 365,000 arrivals staying 2 days = 2,000 resident-equivalents.
+    assert compute_transient_population(365_000, 0, 2.0) == 2000.0
+    assert compute_transient_population(0, 365_000, 1.0) == 1000.0
+
+
+def test_transient_population_is_zero_when_no_facility_data():
+    """
+    Absent arrivals must leave demand untouched. Birdseye omits the key rather than
+    sending zero; a zero would assert "no transient demand", which is a different claim.
+    """
+    from src.whitespace_radar import compute_transient_population
+    assert compute_transient_population(None, None) == 0.0
+    assert compute_transient_population(0, 0) == 0.0
+
+
+def test_transient_population_scales_linearly_with_stay_length():
+    from src.whitespace_radar import compute_transient_population
+    a = compute_transient_population(100_000, 50_000, 1.0)
+    b = compute_transient_population(100_000, 50_000, 4.0)
+    assert abs(b - 4 * a) < 1e-6
+
+
+def test_no_per_visitor_spend_or_capture_rate_constant_exists():
+    """
+    The design converts arrivals to resident-equivalents so the EXISTING demand formula
+    does the spend conversion. A per-visitor spend or capture rate would be a second
+    invented constant, which is what this design exists to avoid.
+    """
+    import inspect, re
+    import src.whitespace_radar as wr
+    src = inspect.getsource(wr)
+    for banned in (r'PER_VISITOR_SPEND', r'CAPTURE_RATE', r'VISITOR_SPEND', r'TOURIST_SPEND'):
+        assert not re.search(banned, src), f'{banned} must not exist'
+
+
+def test_arrivals_raise_demand_for_a_high_traffic_lgu():
+    from src.whitespace_radar import compute_candidate_records
+    base = {
+        "lgu_code": "PH-060408000", "lgu_name": "Kalibo", "province": "Aklan", "region": "VI",
+        "income_classification": "1st Class", "population": 80_000,
+        "median_family_income_annual": 250_000, "income_data_provenance": "PSA_PROVINCIAL",
+        "cluster_lat": 11.706, "cluster_lon": 122.366, "socio_economic_tier": "Unknown",
+        "avg_family_income_annual": 312_500, "flood_risk_level": "UNASSESSED", "rationale": "",
+    }
+    pois = [{"name": "Pizza Place", "category": "PIZZA", "rawTypes": ["pizza_restaurant"],
+             "lat": 11.708, "lon": 122.368, "brand": None, "businessStatus": "OPERATIONAL"}]
+    without = compute_candidate_records([dict(base)], pois, taxonomy=TEST_TAXONOMY)
+    withal = compute_candidate_records([dict(base, air_arrivals=397_812)], pois, taxonomy=TEST_TAXONOMY)
+    assert without and withal
+    assert withal[0]["demandGapScore"] > without[0]["demandGapScore"]
