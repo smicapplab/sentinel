@@ -98,9 +98,29 @@ whitespace ranking unchanged, so the ordering is usable while absolute scores ar
 
 Matching is exact `lgu_code` membership only. Substring city matching is deliberately not
 used: "San Fernando" names three Philippine cities, and an exclusion filter with asymmetric
-error cost must not guess.
+cost (a false absence costs store build capital) cannot afford false positives.
 
-### 3.4 Confidence Band
+### 3.4 Flood Risk Level Classification (Project NOAH)
+
+`flood_risk_level` derives from DOST Project NOAH 100-year rainfall flood hazard indicators
+ingested by Birdseye and consumed via `GET /api/internal/lgus`:
+
+$$\text{flood\_risk\_level} = \begin{cases}
+\text{UNASSESSED}, & \text{if indicators absent} \\
+\text{HIGH}, & \text{if core} \ge 3.0 \text{ or } \text{high\_pct} \ge 20.0\% \\
+\text{MEDIUM}, & \text{if core} \ge 2.0 \text{ or } \text{med\_pct} \ge 25.0\% \\
+\text{LOW}, & \text{otherwise}
+\end{cases}$$
+
+- `FLOOD_CORE_HIGH_CLASS = 3.0`, `FLOOD_CORE_MEDIUM_CLASS = 2.0`
+- `FLOOD_AREA_HIGH_PCT = 20.0`, `FLOOD_AREA_MEDIUM_PCT = 25.0`
+- `flood_hazard_max_class_1km` (commercial core touch) carries primary weight: commercial
+  parcels are points, not broad areas.
+- Absence of NOAH coverage stays `UNASSESSED` (never defaulted to `LOW`).
+- Feeds `mat_whitespace_radar.flood_risk_level` as an executive risk indicator; does NOT
+  enter `compute_composite_wos` and does not alter the opportunity ranking.
+
+### 3.5 Confidence Band
 
 $$C = 0.3\,c_{brand} + 0.2\,c_{geo} + 0.3\,c_{inc} + 0.2\,c_{cal}$$
 $$\text{BandHalfwidth} = W_{max}(1 - C), \quad W_{max} = 25$$

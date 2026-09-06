@@ -14,6 +14,45 @@ except (ImportError, ValueError):
 
 EARTH_RADIUS_KM = 6371.0
 
+# Project NOAH RAINFALL-flood classification. ASSERTED constants, MODEL_ESTIMATE class,
+# declared per superpowers/plan/2026-09-08-noah-flood-hazard-ingestion-plan.md.
+#
+# Classification is driven by AREA SHARE, not by the hazard class at the centroid.
+# Measured 2026-09-06 across the base 20: flood_hazard_max_class_1km is 3 for seventeen
+# LGUs and never falls below 2, because a Philippine city centre almost always sits within
+# 1km of a river or drainage channel. Weighting it produced 17 HIGH / 3 MEDIUM / 0 LOW and
+# gave Tagbilaran (1.23% of its trade area at high hazard) the same label as Butuan
+# (87.45%). Area share spans 0.57-87.45%, a 150x range, and separates them.
+#
+# max_class_1km remains a reported indicator; it is simply not the classifier.
+FLOOD_AREA_HIGH_PCT = 20.0      # >=20% of the 6km trade area at Var=3
+FLOOD_AREA_MEDIUM_PCT = 25.0    # >=25% at Var=2
+FLOOD_AREA_MEDIUM_HIGH_PCT = 3.0  # any material high-hazard share
+
+def determine_flood_risk_level(indicators: dict[str, float]) -> str:
+    """
+    RAINFALL-flood risk only, from DOST Project NOAH hazard indicators.
+
+    SCOPE WARNING: storm surge is NOT included -- those archives are not yet ingested.
+    Tacloban scores 0.57% high rainfall-hazard and classifies LOW here, while being the
+    city Haiyan destroyed by storm surge. Any surface rendering this MUST name the hazard
+    ("Rainfall flood: LOW"), never present it as an unqualified flood risk.
+
+    Absence of NOAH coverage stays UNASSESSED. Never 'LOW' -- absence of data is not
+    evidence of safety.
+    """
+    if not indicators or "flood_hazard_high_pct_6km" not in indicators:
+        return "UNASSESSED"
+
+    high_pct = float(indicators.get("flood_hazard_high_pct_6km", 0.0) or 0.0)
+    med_pct = float(indicators.get("flood_hazard_medium_pct_6km", 0.0) or 0.0)
+
+    if high_pct >= FLOOD_AREA_HIGH_PCT:
+        return "HIGH"
+    if high_pct >= FLOOD_AREA_MEDIUM_HIGH_PCT or med_pct >= FLOOD_AREA_MEDIUM_PCT:
+        return "MEDIUM"
+    return "LOW"
+
 # Initial candidate LGUs for Pizza Hut Whitespace Expansion
 
 def calculate_elastic_spend_ratio(
@@ -783,6 +822,13 @@ def fetch_lgus_from_birdseye(company_id: str, lgu_code: str = None) -> list[dict
         if a.get("sea") is not None:
             l["sea_arrivals"] = a["sea"]
 
+    # Flood hazard metrics from Project NOAH, keyed by lgu_code.
+    # Absent when Birdseye has no flood indicators for this LGU.
+    flood_hazards = payload.get("floodHazard", {}) or {}
+    for l in lgus:
+        code = l.get("lguCode")
+        l["flood_hazard"] = flood_hazards.get(code)
+
     if lgu_code:
         lgus = [l for l in lgus if l.get("lguCode") == lgu_code]
 
@@ -858,7 +904,7 @@ def run_whitespace_radar(company_id: str = "comp-1", trigger_webhook: bool = Tru
             "sea_arrivals": flgu.get("sea_arrivals"),
             "socio_economic_tier": "Unknown",
             "avg_family_income_annual": int(flgu.get("medianFamilyIncomeAnnual", 0) * 1.25),
-            "flood_risk_level": "UNASSESSED",
+            "flood_risk_level": determine_flood_risk_level(flgu.get("flood_hazard") or {}),
             "rationale": "Automated baseline generation."
         })
 
